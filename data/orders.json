@@ -1,0 +1,23 @@
+{
+  "61d5cbb4-115a-4e58-95a4-fb6926defe8b": {
+    "id": "61d5cbb4-115a-4e58-95a4-fb6926defe8b",
+    "user_address": "0xowner",
+    "chain": "ethereum",
+    "market_id": "0xMarket1",
+    "trigger_type": "healthfactorbelow",
+    "trigger_threshold": "1.05",
+    "action": "closeposition",
+    "authorization": {
+      "authorizer": "0x0000000000000000000000000000000000000000",
+      "authorized": "0x0000000000000000000000000000000000000000",
+      "is_authorized": true,
+      "nonce": "0x0",
+      "deadline": "0x0"
+    },
+    "signature": "0xdeadbeef",
+    "status": "active",
+    "created_at": 1781701655,
+    "updated_at": 1781701655,
+    "feishu_target": "ou_test"
+  }
+}

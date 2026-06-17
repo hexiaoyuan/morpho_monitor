@@ -1,0 +1,53 @@
+# morpho_monitor configuration
+# Copy this file to config.toml and fill in your values.
+
+[server]
+host = "0.0.0.0"
+port = 16800
+
+[admin]
+# EIP-55 checksummed admin wallet address
+address = "0xYourAdminAddress"
+
+[hot_wallet]
+# Private key of the hot wallet that executes emergency withdrawals
+# DO NOT commit this file with a real key! Use MORPHO_HOT_WALLET_KEY env var instead.
+private_key = "0x0000000000000000000000000000000000000000000000000000000000000000"
+# Minimum ETH balance before system alerts
+gas_min_balance = "0.1"
+
+# Morpho GraphQL API — zero-config data source (always on, 60s polling)
+# gql_url = "https://api.morpho.org/graphql"
+
+# Per-chain RPC (optional — only needed for real-time monitoring)
+# If not configured, the GQL API covers that chain with ~60s latency.
+
+[chains.ethereum]
+# rpc_http = "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
+# rpc_ws = "wss://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
+polling_interval_secs = 12
+
+[chains.base]
+# rpc_http = "https://base-mainnet.g.alchemy.com/v2/YOUR_KEY"
+# rpc_ws = "wss://base-mainnet.g.alchemy.com/v2/YOUR_KEY"
+polling_interval_secs = 12
+
+# [chains.optimism]
+# rpc_http = "https://opt-mainnet.g.alchemy.com/v2/YOUR_KEY"
+# polling_interval_secs = 12
+
+# [chains.arbitrum]
+# rpc_http = "https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY"
+# polling_interval_secs = 12
+
+# [chains.unichain]
+# rpc_http = "https://mainnet.unichain.org"
+# polling_interval_secs = 12
+
+# [chains.hyperevm]
+# rpc_http = "https://rpc.hyperevm.xyz"
+# polling_interval_secs = 6
+
+# Optional: Flashbots for private transaction broadcast
+# [flashbots]
+# rpc_url = "https://rpc.flashbots.net"

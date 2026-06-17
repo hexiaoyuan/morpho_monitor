@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>morpho_monitor — 多链 Morpho 风控</title>
+<style>
+:root{--bg:#0b0f19;--c1:#111827;--c2:#1a1f2e;--c3:#1e293b;--bdr:#1e293b;--tx:#e2e8f0;--t2:#94a3b8;--t3:#64748b;--ac:#6366f1;--ac2:#818cf8;--gr:#22c55e;--rd:#ef4444;--am:#f59e0b;--r:10px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;font-size:14px;line-height:1.5}
+.container{max-width:1200px;margin:0 auto;padding:24px 16px}
+/* Header */
+.hdr{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:32px;padding-bottom:16px;border-bottom:1px solid var(--bdr)}
+.hdr h1{font-size:20px;color:var(--ac2);margin:0}.hdr p{font-size:12px;color:var(--t3);margin:0}
+.hdr-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* Inputs & Buttons */
+input,select,textarea,button{font-family:inherit;font-size:13px}
+input,select,textarea{padding:8px 12px;background:var(--c1);border:1px solid var(--bdr);border-radius:8px;color:var(--tx);outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--ac)}
+button{padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-weight:500;color:#fff;transition:all .15s}
+.btn-primary{background:var(--ac)}.btn-primary:hover{background:var(--ac2)}
+.btn-green{background:var(--gr)}.btn-green:hover{background:#16a34a}
+.btn-red{background:var(--rd)}.btn-red:hover{background:#dc2626}
+.btn-amber{background:var(--am)}.btn-amber:hover{background:#d97706}
+.btn-gray{background:var(--c3)}.btn-gray:hover{background:#334155}
+.btn-sm{padding:4px 10px;font-size:12px}.btn-xs{padding:2px 8px;font-size:11px}
+button:disabled{opacity:.4;cursor:default}
+/* Tabs */
+.tabs{display:flex;gap:24px;margin-bottom:24px;position:sticky;top:0;z-index:50;background:var(--bg);padding:8px 0}
+.tabs button{background:none;border:none;padding:0 0 8px;border-bottom:2px solid transparent;color:var(--t2);font-size:14px;font-weight:500;border-radius:0;cursor:pointer}
+.tabs button:hover{color:var(--tx)}
+.tabs button.active{border-bottom-color:var(--ac);color:var(--ac)}
+/* Cards */
+.card{background:var(--c1);border:1px solid var(--bdr);border-radius:var(--r);padding:16px;margin-bottom:12px}
+.card-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.card-grid{display:grid;grid-template-columns:1fr;gap:16px}
+@media(min-width:768px){.card-grid{grid-template-columns:repeat(2,1fr)}}
+/* Forms */
+.form-group{margin-bottom:12px}
+.form-group label{display:block;font-size:12px;color:var(--t2);margin-bottom:4px}
+.form-box{background:var(--c1);border:1px solid var(--bdr);border-radius:var(--r);padding:20px;margin-bottom:16px}
+.form-box h3{font-size:14px;font-weight:600;margin:0 0 16px;color:var(--tx)}
+/* Modal */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
+.modal-content{background:var(--c1);border:1px solid var(--bdr);border-radius:12px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto}
+.modal-content h3{font-size:16px;margin:0 0 16px}
+/* Toast */
+.toast-wrap{position:fixed;top:16px;right:16px;z-index:200;display:flex;flex-direction:column;gap:8px}
+.toast{padding:10px 16px;border-radius:8px;color:#fff;font-size:13px;animation:slideIn .3s ease-out;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.toast-info{background:var(--ac)}.toast-ok{background:#15803d}.toast-err{background:var(--rd)}.toast-warn{background:var(--am)}
+@keyframes slideIn{from{transform:translateY(-100%);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes fadeOut{from{opacity:1}to{opacity:0}}
+.fade-out{animation:fadeOut .3s ease-out forwards}
+/* Typography */
+.tx-xs{font-size:11px}.tx-sm{font-size:13px}.tx-mono{font-family:monospace}.tx-right{text-align:right}.tx-center{text-align:center}
+.tx-dim{color:var(--t3)}.tx-mid{color:var(--t2)}.tx-red{color:var(--rd)}.tx-green{color:var(--gr)}.tx-amber{color:var(--am)}
+.mt1{margin-top:4px}.mt2{margin-top:8px}.mt3{margin-top:12px}.mb1{margin-bottom:4px}.mb2{margin-bottom:8px}.mb3{margin-bottom:12px}.mb4{margin-bottom:16px}
+.gap1{gap:4px}.gap2{gap:8px}.gap3{gap:12px}
+.w-full{width:100%}.w-auto{width:auto;display:inline-block}
+/* Badge */
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;color:#fff}
+.badge-green{background:#15803d}.badge-amber{background:var(--am)}.badge-blue{background:var(--ac)}.badge-red{background:var(--rd)}.badge-gray{background:var(--t3)}
+/* Stats grid inside card */
+.card-stats{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-top:12px;padding-top:12px;border-top:1px solid var(--bdr);font-size:13px}
+.card-drag{cursor:grab;user-select:none}.card-drag:active{cursor:grabbing}.card-dragging{opacity:.4}
+</style>
+<script type="importmap">
+{ "imports": { "viem": "https://cdn.jsdelivr.net/npm/viem@2.52.2/+esm" } }
+</script>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="hdr">
+  <div><h1>🛡️ morpho_monitor</h1><p>多链 Morpho 自动化风控与实时告警</p></div>
+  <div class="hdr-r">
+    <input id="server-url" type="text" placeholder="http://localhost:16800" style="width:180px">
+    <button class="btn-gray btn-sm" onclick="saveServerUrl()">💾</button>
+    <button id="connect-btn" class="btn-primary" onclick="connectWallet()">连接钱包</button>
+    <span id="user-address" class="tx-sm" style="display:none"></span>
+    <button id="copy-addr-btn" class="btn-gray btn-xs" onclick="copyAddr()" style="display:none" title="复制地址">📋</button>
+    <span id="user-role" class="badge" style="display:none"></span>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-wrap" id="toast-container"></div>
+
+<!-- Tabs -->
+<div class="tabs" id="tab-nav">
+  <button class="active" data-tab="orders">📋 条件单</button>
+  <button data-tab="markets">📊 自选看板</button>
+  <button data-tab="feishu">🔔 飞书配置</button>
+  <button id="admin-tab" data-tab="admin" style="display:none">👑 白名单管理</button>
+</div>
+
+<!-- Tab: Orders -->
+<div id="tab-orders">
+  <div class="card-row mb4">
+    <h2 style="font-size:16px;margin:0">条件单列表</h2>
+    <button class="btn-green" id="create-order-btn" onclick="showCreateOrderModal()" disabled>+ 新建条件单</button>
+  </div>
+  <div id="orders-list"><p class="tx-center tx-dim" style="padding:32px 0">请先登录以查看条件单</p></div>
+</div>
+
+<!-- Tab: Markets -->
+<div id="tab-markets" style="display:none">
+  <div class="card-row mb4">
+    <div class="hdr-r">
+      <h2 style="font-size:16px;margin:0">自选看板</h2>
+      <select id="watch-refresh-interval" onchange="setWatchRefreshInterval()" class="w-auto">
+        <option value="0">Never</option><option value="12">12秒</option><option value="60">1分钟</option><option value="120">2分钟</option><option value="300">5分钟</option>
+      </select>
+      <button class="btn-primary btn-sm" onclick="refreshAllWatchData()">🔄 全部刷新</button>
+    </div>
+    <button class="btn-gray btn-sm" onclick="showAddModal()">+ 添加</button>
+  </div>
+  <div id="watchlist" class="card-grid"><p class="tx-center tx-dim" style="padding:32px 0;grid-column:span 2">暂无自选，点击上方按钮添加</p></div>
+</div>
+
+<!-- Tab: Feishu -->
+<div id="tab-feishu" style="display:none">
+  <h2 style="font-size:16px;margin:0 0 16px">飞书通知配置</h2>
+  <div class="form-box">
+    <h3>👤 我的飞书通知</h3>
+    <div class="form-group"><label>昵称</label><input id="feishu-nickname" placeholder="Alice" class="w-full"></div>
+    <div class="form-group"><label>App ID</label><input id="feishu-app-id" placeholder="cli_xxxx" class="w-full"></div>
+    <div class="form-group"><label>App Secret</label><input id="feishu-app-secret" type="password" placeholder="****" class="w-full"></div>
+    <div class="form-group"><label>User OpenID</label><input id="feishu-openid" placeholder="ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="w-full"></div>
+    <button class="btn-primary" id="save-feishu-btn" onclick="saveMyFeishuConfig()" disabled>保存通知配置</button>
+    <p id="feishu-status" class="tx-xs tx-dim mt2"></p>
+  </div>
+  <div class="form-box">
+    <h3>🧪 通知测试</h3>
+    <div class="form-group"><label>测试消息</label><textarea id="feishu-test-text" rows="2" placeholder="输入测试文字..." class="w-full" style="resize:none"></textarea></div>
+    <button class="btn-green" id="test-feishu-btn" onclick="testFeishuNotification()" disabled>发送测试消息</button>
+    <p id="feishu-test-status" class="tx-xs tx-dim mt2"></p>
+  </div>
+</div>
+
+<!-- Tab: Admin -->
+<div id="tab-admin" style="display:none">
+  <h2 style="font-size:16px;margin:0 0 16px">白名单管理（管理员）</h2>
+  <div class="form-box mb4">
+    <div class="form-group"><label>钱包地址</label><input id="wl-address" placeholder="0x..." class="w-full"></div>
+    <div class="form-group"><label>昵称</label><input id="wl-nickname" placeholder="Alice" class="w-full"></div>
+    <button class="btn-green" onclick="addToWhitelist()">添加到白名单</button>
+  </div>
+  <div id="whitelist-list"><p class="tx-dim tx-sm">加载中...</p></div>
+</div>
+
+<!-- Order Modal -->
+<div id="order-modal" class="modal" style="display:none">
+  <div class="modal-content">
+    <h3>新建条件单</h3>
+    <div class="form-group"><label>链</label><select id="order-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option></select></div>
+    <div class="form-group"><label>市场 ID</label><input id="order-add-id" placeholder="0x..." class="w-full"></div>
+    <div class="form-group"><label>触发条件</label><select id="order-trigger-type" class="w-full"><option value="healthfactorbelow">健康因子低于阈值</option><option value="lltvabove">LLTV 高于阈值</option></select></div>
+    <div class="form-group"><label>阈值</label><input id="order-threshold" placeholder="1.05" class="w-full"></div>
+    <div class="form-group"><label>执行动作</label><select id="order-action" class="w-full"><option value="closeposition">平仓</option><option value="withdrawcollateral">提取抵押品</option><option value="repayborrow">偿还借款</option></select></div>
+    <div class="form-group"><label>飞书通知目标（可选）</label><input id="order-feishu" placeholder="ou_xxxx" class="w-full"></div>
+    <p class="tx-amber tx-sm mb2" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--bdr)">⚠️ 需要签署 EIP-712 授权</p>
+    <button class="btn-primary w-full" onclick="signAndCreateOrder()">签名并创建条件单</button>
+    <button class="btn-gray w-full mt2" onclick="closeOrderModal()">取消</button>
+  </div>
+</div>
+
+<!-- Market Modal -->
+<div id="add-modal" class="modal" style="display:none">
+  <div class="modal-content" style="max-width:380px">
+    <h3>添加自选</h3>
+    <div class="form-group"><label>Type</label><select id="add-type" class="w-full"><option value="market">Market</option><option value="vault">Vault</option></select></div>
+    <div class="form-group"><label>Chain</label><select id="add-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option></select></div>
+    <div class="form-group"><label>Name</label><input id="add-name" placeholder="ETH / USDC" class="w-full"></div>
+    <div class="form-group"><label>ID</label><input id="add-id" placeholder="0x..." class="w-full"></div>
+    <button class="btn-green w-full" onclick="addWatchItem()">添加</button>
+    <button class="btn-gray w-full mt2" onclick="closeAddModal()">取消</button>
+  </div>
+</div>
+
+</div><!-- /container -->
+
+<script type="module">
+import { createPublicClient, http, getAddress } from 'viem';
+
+// ====== State ======
+const DEFAULT_SERVER = 'http://localhost:16800';
+const LS_SERVER_KEY = 'morpho_server_url';
+function getServerUrl(){return localStorage.getItem(LS_SERVER_KEY)||DEFAULT_SERVER}
+function setServerUrl(u){localStorage.setItem(LS_SERVER_KEY,u)}
+let API_BASE=getServerUrl()+'/api',jwtToken=null,userRole=null,userAccount=null;
+
+// ====== Helpers ======
+const $=id=>document.getElementById(id);
+const qsa=s=>document.querySelectorAll(s);
+function showToast(msg,type='info'){
+  const cls={info:'toast-info',success:'toast-ok',error:'toast-err',warn:'toast-warn'}[type]||'toast-info';
+  const c=$('toast-container'),el=document.createElement('div');
+  el.className='toast '+cls;el.textContent=msg;c.appendChild(el);
+  setTimeout(()=>{el.classList.add('fade-out');setTimeout(()=>el.remove(),300)},3000);
+}
+function shortenAddr(a){return a?a.slice(0,6)+'...'+a.slice(-4):''}
+function toChecksumAddress(a){try{return getAddress(a)}catch{return a.toLowerCase()}}
+
+async function api(method,path,body){
+  const h={'Content-Type':'application/json'};if(jwtToken)h['Authorization']='Bearer '+jwtToken;
+  const resp=await fetch(API_BASE+path,{method,headers:h,body:body?JSON.stringify(body):null});
+  const data=await resp.json();
+  if(!resp.ok||!data.success)throw new Error(data.error||'HTTP '+resp.status);
+  return data.data;
+}
+
+// ====== Server URL ======
+function saveServerUrl(){
+  let u=$('server-url').value.trim().replace(/\/+$/,'');if(!u){showToast('请输入服务器地址','warn');return}
+  setServerUrl(u);API_BASE=u+'/api';clearSession();showToast('服务器地址已更新: '+u,'success');
+}
+
+// ====== Session ======
+function restoreSession(){
+  const j=localStorage.getItem('morpho_jwt'),r=localStorage.getItem('morpho_role'),a=localStorage.getItem('morpho_address');
+  if(!j||!r||!a)return;
+  jwtToken=j;userRole=r;userAccount=a;
+  $('connect-btn').textContent='退出登录';$('connect-btn').className='btn-red';
+  const addrEl=$('user-address');addrEl.textContent=shortenAddr(a);addrEl.dataset.addr=a;addrEl.style.display='';$('copy-addr-btn').style.display='';
+  $('user-role').textContent=r==='admin'?'管理员':'用户';$('user-role').style.display='';$('user-role').className='badge '+(r==='admin'?'badge-amber':'badge-gray');
+  $('create-order-btn').disabled=false;$('save-feishu-btn').disabled=false;$('test-feishu-btn').disabled=false;
+  if(r==='admin')$('admin-tab').style.display='';
+  loadOrders();loadFeishuConfig();
+}
+function clearSession(){
+  jwtToken=null;userRole=null;userAccount=null;
+  ['morpho_jwt','morpho_role','morpho_address'].forEach(k=>localStorage.removeItem(k));
+  $('connect-btn').textContent='连接钱包';$('connect-btn').className='btn-primary';
+  $('connect-btn').onclick=()=>connectWallet();
+  $('user-address').style.display='none';$('copy-addr-btn').style.display='none';$('user-role').style.display='none';$('admin-tab').style.display='none';
+  $('create-order-btn').disabled=true;$('save-feishu-btn').disabled=true;$('test-feishu-btn').disabled=true;
+  $('orders-list').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0">请先登录以查看条件单</p>';
+}
+
+// ====== Network ======
+const KNOWN_CHAINS={1:{chainId:'0x1',chainName:'Ethereum',rpcUrls:['https://eth.llamarpc.com'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},8453:{chainId:'0x2105',chainName:'Base',rpcUrls:['https://mainnet.base.org'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},10:{chainId:'0xa',chainName:'Optimism',rpcUrls:['https://mainnet.optimism.io'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},42161:{chainId:'0xa4b1',chainName:'Arbitrum One',rpcUrls:['https://arb1.arbitrum.io/rpc'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},130:{chainId:'0x82',chainName:'Unichain',rpcUrls:['https://mainnet.unichain.org'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},999:{chainId:'0x3e7',chainName:'HyperEVM',rpcUrls:['https://rpc.hyperevm.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}}};
+async function switchNetwork(){
+  if(!window.ethereum)return;
+  const t=$('network-select').value;if(!t)return;
+  const hex='0x'+Number(t).toString(16);
+  try{await window.ethereum.request({method:'wallet_switchEthereumChain',params:[{chainId:hex}]});showToast('已切换网络','success')}
+  catch(err){if(err.code===4902){const info=KNOWN_CHAINS[Number(t)];if(info){await window.ethereum.request({method:'wallet_addEthereumChain',params:[info]});showToast('已添加并切换网络','success')}}}
+}
+
+// ====== Wallet ======
+async function connectWallet(){
+  if(jwtToken){clearSession();location.reload();return}
+  if(!window.ethereum){showToast('请安装 MetaMask','error');return}
+  try{
+    const accts=await window.ethereum.request({method:'eth_requestAccounts'});if(!accts||!accts.length)return;
+    userAccount=toChecksumAddress(accts[0]);
+    const cid=await window.ethereum.request({method:'eth_chainId'});const cidNum=parseInt(cid,16);
+    const addrEl=$('user-address');addrEl.textContent=shortenAddr(userAccount);addrEl.dataset.addr=userAccount;addrEl.style.display='';$('copy-addr-btn').style.display='';
+    await siweLogin();
+  }catch(e){showToast('连接失败: '+e.message,'error')}
+}
+async function siweLogin(){
+  // Show address immediately (before async SIWE flow)
+  const ae=$('user-address');ae.textContent=shortenAddr(userAccount);ae.dataset.addr=userAccount;ae.style.display='';$('copy-addr-btn').style.display='';
+  try{
+    const nonce=await api('GET','/auth/nonce?address='+userAccount);
+    const host=new URL(getServerUrl()).host,origin=getServerUrl();
+    const msg=host+' wants you to sign in with your Ethereum account:\n'+userAccount+'\n\nSign in to morpho_monitor\n\nURI: '+origin+'\nVersion: 1\nChain ID: 1\nNonce: '+nonce+'\nIssued At: '+new Date().toISOString();
+    const sig=await window.ethereum.request({method:'personal_sign',params:[msg,userAccount]});
+    const login=await api('POST','/auth/login',{message:msg,signature:sig});
+    jwtToken=login.token;userRole=login.role;
+    localStorage.setItem('morpho_jwt',jwtToken);localStorage.setItem('morpho_role',userRole);localStorage.setItem('morpho_address',userAccount);
+    $('connect-btn').textContent='退出登录';$('connect-btn').className='btn-red';
+    const addrEl2=$('user-address');addrEl2.textContent=shortenAddr(userAccount);addrEl2.dataset.addr=userAccount;addrEl2.style.display='';$('copy-addr-btn').style.display='';
+    $('user-role').textContent=userRole==='admin'?'管理员':'用户';$('user-role').style.display='';$('user-role').className='badge '+(userRole==='admin'?'badge-amber':'badge-gray');
+    $('create-order-btn').disabled=false;$('save-feishu-btn').disabled=false;$('test-feishu-btn').disabled=false;
+    if(userRole==='admin')$('admin-tab').style.display='';
+    showToast('登录成功','success');loadOrders();loadFeishuConfig();
+  }catch(e){showToast('登录失败: '+e.message,'error');jwtToken=null}
+}
+
+// ====== Tabs ======
+qsa('#tab-nav button').forEach(btn=>{btn.addEventListener('click',()=>{
+  qsa('#tab-nav button').forEach(b=>{b.classList.remove('active');b.style.borderBottomColor='';b.style.color=''});
+  btn.classList.add('active');btn.style.borderBottomColor='var(--ac)';btn.style.color='var(--ac)';
+  qsa('#tab-orders,#tab-markets,#tab-feishu,#tab-admin').forEach(c=>c.style.display='none');
+  const tab=btn.dataset.tab;$('tab-'+tab).style.display='';
+  if(tab==='admin')loadWhitelist();if(tab==='orders')loadOrders();if(tab==='feishu')loadFeishuConfig();
+  if(tab==='markets')startWatchRefresh();else stopWatchRefresh();
+})});
+
+// ====== Orders ======
+async function loadOrders(){if(!jwtToken)return;try{const o=await api('GET','/orders');renderOrders(o||[])}catch(e){$('orders-list').innerHTML='<p class="tx-red tx-sm tx-center" style="padding:32px 0">加载失败: '+e.message+'</p>'}}
+function renderOrders(orders){
+  if(!orders.length){$('orders-list').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0">暂无条件单</p>';return}
+  const bc={active:'badge-green',triggered:'badge-amber',executed:'badge-blue',failed:'badge-red',invalid:'badge-gray',cancelled:'badge-gray'};
+  const bl={active:'活跃',triggered:'已触发',executed:'已执行',failed:'失败',invalid:'已失效',cancelled:'已取消'};
+  $('orders-list').innerHTML=orders.map(o=>'<div class="card card-row">'
+    +'<div style="flex:1"><div class="mb1"><span class="badge '+(bc[o.status]||'badge-gray')+'">'+(bl[o.status]||o.status)+'</span>'
+    +' <span class="tx-xs tx-mid">'+o.chain+'</span> <span class="tx-xs tx-dim tx-mono">'+shortenAddr(o.market_id)+'</span></div>'
+    +'<div class="tx-sm">触发: <span>'+o.trigger_type+' '+o.trigger_threshold+'</span> &nbsp;动作: <span class="tx-green">'+o.action+'</span></div>'
+    +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · 创建于 '+new Date(o.created_at*1000).toLocaleString()+'</div></div>'
+    +(o.status==='active'?'<button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">取消</button>':'')
+    +'</div>').join('');
+}
+function showCreateOrderModal(){if(!jwtToken){showToast('请先登录','warn');return}$('order-modal').style.display=''}
+function closeOrderModal(){$('order-modal').style.display='none'}
+async function signAndCreateOrder(){
+  if(!userAccount||!window.ethereum)return;
+  try{
+    const chain=$('order-chain').value,marketId=$('order-add-id').value.trim(),triggerType=$('order-trigger-type').value;
+    const threshold=$('order-threshold').value.trim(),action=$('order-action').value;
+    const feishuTarget=$('order-feishu').value.trim()||null;
+    if(!marketId||!threshold){showToast('请填写市场和阈值','warn');return}
+    const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999};
+    const MORPHO_ADDRS={1:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',8453:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',10:'0xce95AfbB8EA029495c66020883F87aaE8864AF92',42161:'0x6c247b1F6182318877311737BaC0844bAa518F5e',130:'0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A',999:'0x68e37dE8d93d3496ae143F2E900490f6280C57cD'};
+    const cid=CHAIN_IDS[chain]||1;
+    const domain={name:'MorphoBlue',version:'1',chainId:cid,verifyingContract:MORPHO_ADDRS[cid]||MORPHO_ADDRS[1]};
+    const types={Authorization:[{name:'authorizer',type:'address'},{name:'authorized',type:'address'},{name:'isAuthorized',type:'bool'},{name:'nonce',type:'uint256'},{name:'deadline',type:'uint256'}]};
+    const deadline=Math.floor(Date.now()/1000)+365*24*3600;
+    const msg={authorizer:userAccount,authorized:userAccount,isAuthorized:true,nonce:'0',deadline:String(deadline)};
+    showToast('请在钱包中签署 EIP-712 授权...','info');
+    const sig=await window.ethereum.request({method:'eth_signTypedData_v4',params:[userAccount,JSON.stringify({domain,types,primaryType:'Authorization',message:msg})]});
+    await api('POST','/orders',{chain,market_id:marketId,trigger_type:triggerType,trigger_threshold:threshold,action,authorization:{authorizer:userAccount,authorized:userAccount,is_authorized:true,nonce:'0',deadline:String(deadline)},signature:sig,feishu_target:feishuTarget});
+    closeOrderModal();showToast('条件单创建成功!','success');loadOrders();
+  }catch(e){showToast('创建失败: '+e.message,'error')}
+}
+async function cancelOrder(id){if(!confirm('确认取消？'))return;try{await api('DELETE','/orders/'+id);showToast('已取消','success');loadOrders()}catch(e){showToast('取消失败: '+e.message,'error')}}
+
+// ====== Markets (GQL) ======
+const GQL_URL='https://api.morpho.org/graphql',WATCH_DATA_CACHE={};
+const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999};
+let watchRefreshTimer=null,watchTabVisible=false;
+function getWatchlist(){try{return JSON.parse(localStorage.getItem('morpho_watchlist')||'[]')}catch{return[]}}
+function saveWatchlist(w){localStorage.setItem('morpho_watchlist',JSON.stringify(w))}
+async function fetchWatchData(items){
+  if(!items||!items.length)return;
+  const aliases=items.map((m,i)=>{
+    const cid=CHAIN_IDS[m.chain]||1;
+    if(m.type==='vault'){
+      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { totalAssetsUsd liquidityUsd avgNetApy }';
+    }
+    return'm'+i+': marketById(chainId: '+cid+', marketId: "'+m.id+'") { loanAsset { decimals } state { supplyAssets borrowAssets supplyApy } }';
+  }).join('\n');
+  try{
+    const resp=await fetch(GQL_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:'{ '+aliases+' }'})});
+    const json=await resp.json();if(json.errors){console.error('GQL:',json.errors);return}
+    const now=Date.now(),data=json?.data||{};
+    items.forEach((m,i)=>{const item=data['m'+i];if(!item)return;
+      if(m.type==='vault'){
+        WATCH_DATA_CACHE[m.id]={
+          totalAssetsUsd:item.totalAssetsUsd||0,
+          liquidityUsd:item.liquidityUsd||0,
+          apy:item.avgNetApy,decimals:0,updatedAt:now,
+        };
+      }else if(item?.state){
+        const st=item.state;WATCH_DATA_CACHE[m.id]={supply:BigInt(st.supplyAssets||'0'),borrow:BigInt(st.borrowAssets||'0'),apy:st.supplyApy,decimals:item.loanAsset?.decimals||18,updatedAt:now};
+      }
+    });
+  }catch(e){console.error('GQL fetch:',e)}
+}
+async function refreshAllWatchData(){const items=getWatchlist();await fetchWatchData(items);renderWatchlist()}
+async function refreshWatchData(mid){const items=getWatchlist();const m=items.find(x=>x.id===mid);if(m)await fetchWatchData([m]);renderWatchlist()}
+function formatToken(v,dec){if(!v||v===0n)return'0.00';const one=10n**BigInt(dec||18);const num=Number(v/one)+Number(v%one)/Number(one);if(num>=1e6)return'$'+(num/1e6).toFixed(2)+'M';if(num>=1e3)return'$'+(num/1e3).toFixed(2)+'K';return'$'+num.toFixed(2)}
+function formatApy(a){return a!=null?(a*100).toFixed(2)+'%':'--'}
+function copyAddr(){const a=$('user-address').dataset.addr;if(a)copyText(a)}
+async function copyText(t){try{await navigator.clipboard.writeText(t);showToast('已复制','success')}catch{showToast('复制失败','error')}}
+let dragIdx=null;
+function onDragStart(e,i){dragIdx=i;e.target.classList.add('card-dragging');e.dataTransfer.effectAllowed='move'}
+function onDragEnd(e){e.target.classList.remove('card-dragging');dragIdx=null}
+function onDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move'}
+function onDrop(e,i){
+  e.preventDefault();
+  if(dragIdx===null||dragIdx===i)return;
+  const m=getWatchlist();const[item]=m.splice(dragIdx,1);m.splice(i,0,item);saveWatchlist(m);renderWatchlist();
+}
+function fmtUsd(v){if(v==null)return'--';if(v>=1e6)return'$'+(v/1e6).toFixed(2)+'M';if(v>=1e3)return'$'+(v/1e3).toFixed(2)+'K';return'$'+Number(v).toFixed(2)}
+function renderWatchlist(){
+  const items=getWatchlist();
+  if(!items.length){$('watchlist').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0;grid-column:span 2">暂无自选，点击上方按钮添加</p>';return}
+  $('watchlist').innerHTML=items.map((m,i)=>{const d=WATCH_DATA_CACHE[m.id];const isVault=m.type==='vault';const dec=d?.decimals||18;
+    let stats='';
+    if(isVault){
+      stats='<div class="card-stats"><span class="tx-dim">Total Deposits</span><span class="tx-right">'+fmtUsd(d?.totalAssetsUsd)+'</span>'
+        +'<span class="tx-dim">Liquidity</span><span class="tx-right">'+fmtUsd(d?.liquidityUsd)+'</span>'
+        +'<span class="tx-dim">Net APY</span><span class="tx-right tx-green" style="font-weight:500">'+(d?formatApy(d.apy):'--')+'</span></div>';
+    }else{
+      stats='<div class="card-stats"><span class="tx-dim">Total Market</span><span class="tx-right">'+(d?formatToken(d.supply,dec):'--')+'</span>'
+        +'<span class="tx-dim">Liquidity</span><span class="tx-right">'+(d?formatToken(d.supply-d.borrow,dec):'--')+'</span>'
+        +'<span class="tx-dim">Supply APY</span><span class="tx-right tx-green" style="font-weight:500">'+(d?formatApy(d.apy):'--')+'</span></div>';
+    }
+    return'<div class="card card-drag" draggable="true" ondragstart="onDragStart(event,'+i+')" ondragend="onDragEnd(event)" ondragover="onDragOver(event)" ondrop="onDrop(event,'+i+')">'
+    +'<div class="card-row mb1"><span class="tx-dim" style="font-size:10px">⠿</span><span class="tx-sm" style="font-weight:500">'+(m.name||shortenAddr(m.id))+'</span>'
+    +'<span class="badge '+(isVault?'badge-blue':'badge-green')+'" style="font-size:9px">'+(isVault?'VAULT':'MARKET')+'</span>'
+    +'<div class="hdr-r gap1"><button class="btn-gray btn-xs" onclick="refreshWatchData(\''+m.id+'\')">🔄</button><button class="btn-red btn-xs" onclick="removeWatchItem('+i+')">✕</button></div></div>'
+    +'<div class="tx-xs tx-dim mb2"><span class="tx-mono">'+shortenAddr(m.id)+'</span> <button class="btn-gray btn-xs" onclick="copyText(\''+m.id+'\')">📋</button> '+m.chain+'</div>'
+    +stats
+    +(d?'<div class="tx-right tx-xs tx-dim mt1">更新于 '+new Date(d.updatedAt).toLocaleTimeString()+'</div>':'<div class="tx-right tx-xs tx-dim mt1">未加载数据</div>')
+    +'</div>'}).join('');
+}
+function showAddModal(){$('add-modal').style.display=''}
+function closeAddModal(){$('add-modal').style.display='none'}
+function addWatchItem(){
+  const type=$('add-type').value,chain=$('add-chain').value,id=$('add-id').value.trim(),name=$('add-name').value.trim();
+  if(!id){showToast('请输入 ID','warn');return}
+  const items=getWatchlist();items.push({type,chain,id,name:name||id});saveWatchlist(items);
+  $('add-id').value='';$('add-name').value='';closeAddModal();refreshAllWatchData();showToast('已添加','success');
+}
+function removeWatchItem(i){const m=getWatchlist();const r=m.splice(i,1)[0];if(r)delete WATCH_DATA_CACHE[r.id];saveWatchlist(m);renderWatchlist()}
+function setWatchRefreshInterval(){
+  const secs=parseInt($('watch-refresh-interval').value);localStorage.setItem('morpho_watch_refresh_secs',secs);
+  if(watchRefreshTimer){clearInterval(watchRefreshTimer);watchRefreshTimer=null}
+  if(secs>0&&watchTabVisible)watchRefreshTimer=setInterval(refreshAllWatchData,secs*1000);
+}
+function startWatchRefresh(){watchTabVisible=true;const secs=parseInt($('watch-refresh-interval').value)||0;if(secs>0){if(watchRefreshTimer)clearInterval(watchRefreshTimer);watchRefreshTimer=setInterval(refreshAllWatchData,secs*1000)}refreshAllWatchData()}
+function stopWatchRefresh(){watchTabVisible=false;if(watchRefreshTimer){clearInterval(watchRefreshTimer);watchRefreshTimer=null}}
+function initWatchRefresh(){const s=localStorage.getItem('morpho_watch_refresh_secs');const secs=s?parseInt(s):0;const sel=$('watch-refresh-interval');if(sel)sel.value=String(secs)}
+
+// ====== Feishu ======
+async function loadFeishuConfig(){
+  if(!jwtToken)return;
+  try{const c=await api('GET','/alerts');if(c){$('feishu-nickname').value=c.nickname||'';$('feishu-app-id').value=c.app_id||'';$('feishu-app-secret').value=c.app_secret||'';$('feishu-openid').value=c.user_openid||'';$('feishu-status').textContent='已配置 · 更新于 '+new Date(c.updated_at*1000).toLocaleString()}else{$('feishu-status').textContent='尚未配置飞书通知'}}catch(e){$('feishu-status').textContent='加载失败'}
+}
+async function saveMyFeishuConfig(){
+  if(!jwtToken){showToast('请先登录','warn');return}
+  const nn=$('feishu-nickname').value.trim(),ai=$('feishu-app-id').value.trim(),as=$('feishu-app-secret').value.trim(),oi=$('feishu-openid').value.trim();
+  if(!nn||!ai||!as||!oi){showToast('请填写完整配置','warn');return}
+  try{await api('PUT','/alerts',{nickname:nn,app_id:ai,app_secret:as,user_openid:oi});showToast('通知配置已保存','success');loadFeishuConfig()}catch(e){showToast('保存失败: '+e.message,'error')}
+}
+async function testFeishuNotification(){
+  if(!jwtToken){showToast('请先登录','warn');return}const t=$('feishu-test-text').value.trim();if(!t){showToast('请输入测试消息','warn');return}
+  if(!$('feishu-openid').value.trim()){showToast('请先保存飞书配置','warn');return}
+  $('feishu-test-status').textContent='发送中...';
+  try{const r=await api('POST','/alerts/test',{text:t});showToast('测试消息已发送！','success');$('feishu-test-status').textContent='✅ '+r;$('feishu-test-text').value=''}catch(e){$('feishu-test-status').textContent='❌ '+e.message;showToast('发送失败: '+e.message,'error')}
+}
+
+// ====== Admin ======
+async function loadWhitelist(){
+  if(!jwtToken||userRole!=='admin')return;
+  try{const e=await api('GET','/admin/whitelist');if(!e||!e.length){$('whitelist-list').innerHTML='<p class="tx-dim tx-sm">白名单为空</p>';return}
+  $('whitelist-list').innerHTML=e.map(x=>'<div class="card card-row"><div><span class="tx-sm" style="font-weight:500">'+x.nickname+'</span><span class="tx-xs tx-dim tx-mono ml2">'+shortenAddr(x.address)+'</span></div><button class="btn-red btn-sm" onclick="removeWhitelist(\''+x.address+'\')">移除</button></div>').join('')}catch(e){$('whitelist-list').innerHTML='<p class="tx-red tx-sm">加载失败: '+e.message+'</p>'}
+}
+async function addToWhitelist(){
+  const a=$('wl-address').value.trim(),n=$('wl-nickname').value.trim();
+  if(!a||!n){showToast('请填写地址和昵称','warn');return}if(!a.startsWith('0x')||a.length!==42){showToast('无效地址格式','warn');return}
+  try{await api('POST','/admin/whitelist',{address:a,nickname:n});$('wl-address').value='';$('wl-nickname').value='';showToast('已添加','success');loadWhitelist()}catch(e){showToast('添加失败: '+e.message,'error')}
+}
+async function removeWhitelist(a){if(!confirm('确认移除 '+shortenAddr(a)+'？'))return;try{await api('DELETE','/admin/whitelist/'+a);showToast('已移除','success');loadWhitelist()}catch(e){showToast('移除失败: '+e.message,'error')}}
+
+// ====== Init ======
+$('server-url').value=getServerUrl();restoreSession();renderWatchlist();initWatchRefresh();
+if(window.ethereum){window.ethereum.on('accountsChanged',()=>{clearSession();location.reload()});window.ethereum.on('chainChanged',()=>{clearSession();location.reload()})}
+
+// Expose onclick handlers
+Object.assign(window,{connectWallet,saveServerUrl,showCreateOrderModal,closeOrderModal,signAndCreateOrder,cancelOrder,showAddModal,closeAddModal,addWatchItem,removeWatchItem,refreshAllWatchData,refreshWatchData,copyText,copyAddr,setWatchRefreshInterval,saveMyFeishuConfig,testFeishuNotification,addToWhitelist,removeWhitelist,onDragStart,onDragEnd,onDragOver,onDrop});
+</script>
+</body>
+</html>

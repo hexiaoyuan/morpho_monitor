@@ -1,0 +1,10 @@
+{
+  "0xuser1": {
+    "user_address": "0xuser1",
+    "nickname": "Alice",
+    "app_id": "cli_test",
+    "app_secret": "secret",
+    "user_openid": "ou_test123",
+    "updated_at": 1781701655
+  }
+}
