@@ -86,7 +86,8 @@ async fn test_notification(
     }
 
     let alert_manager = AlertManager::new();
-    let content = format!("🧪 测试消息\n👤 {} [{}]\n内容: {}", cfg.nickname, &cfg.user_address[..10], text);
+    let short = if cfg.user_address.len() >= 10 { &cfg.user_address[..10] } else { cfg.user_address.as_str() };
+    let content = format!("🧪 测试消息\n👤 {} [{}]\n内容: {}", cfg.nickname, short, text);
     alert_manager.send_to_user(&cfg, &content).await?;
 
     Ok(Json(ApiResponse::ok("测试消息已发送".into())))
@@ -96,13 +97,11 @@ async fn persist_alerts(state: &AppState) -> AppResult<()> {
     let configs = state.alert_configs.read().await;
     let json = serde_json::to_string_pretty(&*configs)
         .map_err(|e| AppError::Storage(format!("serialize alerts: {}", e)))?;
-    let path = "data/alerts.json";
-    let tmp = "data/alerts.tmp";
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    let path = format!("{}/alerts.json", state.data_dir);
+    if let Some(parent) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(tmp, &json).map_err(|e| AppError::Storage(format!("write alerts: {}", e)))?;
-    std::fs::rename(tmp, path).map_err(|e| AppError::Storage(format!("rename alerts: {}", e)))?;
+    std::fs::write(&path, &json).map_err(|e| AppError::Storage(format!("write alerts: {}", e)))?;
     Ok(())
 }
 
@@ -123,7 +122,7 @@ mod tests {
             monitor_states: Arc::new(RwLock::new(HashMap::new())),
             nonce_store: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(AppConfig {
-                server: ServerConfig { host: "127.0.0.1".into(), port: 3000 },
+                server: ServerConfig { host: "127.0.0.1".into(), port: 3000, data_dir: "data".into() },
                 admin: AdminConfig { address: "0xAdmin00000000000000000000000000000000000000".into() },
                 hot_wallet: HotWalletConfig { private_key: "0xdead".into(), gas_min_balance: "0.1".into() },
                 gql_url: "https://api.morpho.org/graphql".into(),
@@ -134,6 +133,7 @@ mod tests {
                 flashbots: None,
             }),
             jwt_secret: "test-jwt-secret".into(),
+            data_dir: "data".into(),
         }
     }
 

@@ -233,16 +233,17 @@ impl AlertManager {
             let configs = state.alert_configs.read().await;
             configs.get(user_address).cloned()
         };
+        let short: &str = if user_address.len() >= 10 { &user_address[..10] } else { user_address };
         match cfg {
             Some(c) if !c.app_id.is_empty() && !c.user_openid.is_empty() => {
-                let label = format!("{} [{}]", c.nickname, &user_address[..10]);
+                let label = format!("{} [{}]", c.nickname, short);
                 let full = format!("{}\n👤 {}\n{}", content, label, Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 if let Err(e) = self.send_to_user(&c, &full).await {
                     tracing::warn!("Feishu send failed for {}: {}", label, e);
                 }
             }
             _ => {
-                tracing::info!("No feishu config for {} — skipped notification", &user_address[..10]);
+                tracing::info!("No feishu config for {} — skipped notification", short);
             }
         }
     }

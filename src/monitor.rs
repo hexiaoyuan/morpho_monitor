@@ -162,12 +162,20 @@ impl ChainMonitor {
         // For each active order, evaluate risk
         for order in &active_orders {
             // Check if the authorization nonce is still valid
-            self.check_nonce_validity(provider, order, state, alert_manager)
-                .await?;
+            if let Err(e) = self.check_nonce_validity(provider, order, state, alert_manager)
+                .await
+            {
+                warn!("Nonce check failed for order {}: {}", order.id, e);
+                continue;
+            }
 
             // Evaluate position health
-            self.evaluate_position_health(provider, order, state, alert_manager, now)
-                .await?;
+            if let Err(e) = self.evaluate_position_health(provider, order, state, alert_manager, now)
+                .await
+            {
+                warn!("Health eval failed for order {}: {}", order.id, e);
+                continue;
+            }
         }
 
         Ok(())

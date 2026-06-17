@@ -164,19 +164,15 @@ async fn persist_orders(state: &AppState) -> AppResult<()> {
     let json = serde_json::to_string_pretty(&*orders).map_err(|e| {
         AppError::Storage(format!("Failed to serialize orders: {}", e))
     })?;
-    let path = "data/orders.json";
-    let tmp = "data/orders.tmp";
+    let path = format!("{}/orders.json", state.data_dir);
 
     // Ensure data directory exists
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
-    std::fs::write(tmp, &json).map_err(|e| {
+    std::fs::write(&path, &json).map_err(|e| {
         AppError::Storage(format!("Failed to write orders: {}", e))
-    })?;
-    std::fs::rename(tmp, path).map_err(|e| {
-        AppError::Storage(format!("Failed to rename orders file: {}", e))
     })?;
     Ok(())
 }
@@ -207,7 +203,7 @@ mod tests {
             monitor_states: Arc::new(RwLock::new(HashMap::new())),
             nonce_store: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(AppConfig {
-                server: ServerConfig { host: "127.0.0.1".into(), port: 3000 },
+                server: ServerConfig { host: "127.0.0.1".into(), port: 3000, data_dir: "data".into() },
                 admin: AdminConfig { address: "0xAdmin00000000000000000000000000000000000000".into() },
                 hot_wallet: HotWalletConfig { private_key: "0xdead".into(), gas_min_balance: "0.1".into() },
                 gql_url: "https://api.morpho.org/graphql".into(),
@@ -222,6 +218,7 @@ mod tests {
                 flashbots: None,
             }),
             jwt_secret: "test-jwt-secret".into(),
+            data_dir: "data".into(),
         }
     }
 

@@ -33,7 +33,7 @@ cargo build --release
 验证测试通过：
 
 ```bash
-cargo test --lib -- --test-threads=1
+cargo test --lib
 ```
 
 ---
@@ -52,6 +52,7 @@ cp config.example.toml config.toml
 [server]
 host = "0.0.0.0"      # 监听地址
 port = 16800           # 监听端口
+# data_dir = "data"    # 数据文件目录
 
 [admin]
 address = "0xYourAdminWalletAddress"   # 管理员钱包地址 (EIP-55 格式)
@@ -95,6 +96,7 @@ export MORPHO_HOT_WALLET_KEY="0x你的私钥"
 export MORPHO_JWT_SECRET="$(uuidgen)"
 
 # 可选：覆盖 config.toml 中的其他配置
+export MORPHO_DATA_DIR="data"
 export MORPHO_ADMIN_ADDRESS="0x..."
 export MORPHO_GQL_URL="https://api.morpho.org/graphql"
 export RPC_ETH_HTTP="https://..."

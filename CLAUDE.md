@@ -8,8 +8,8 @@
 ```bash
 cargo build                  # debug build
 cargo build --release        # release build
-cargo test --lib -- --test-threads=1   # all tests (serial — JSON I/O)
-cargo test -p morpho_monitor           # same, shorter
+cargo test --lib                     # works in parallel
+cargo test -p morpho_monitor
 cargo check                  # fast compile check, no output binary
 
 # Run (requires data/ dir)
@@ -70,7 +70,7 @@ AppState
 └── jwt_secret:    String
 ```
 
-- **Atomic writes**: JSON files use write-to-tmp → `fs::rename` pattern (see `persist_orders`, `persist_whitelist`, `persist_alerts`).
+- **Direct writes**: JSON files use `fs::write` directly to the target path (no tmp-rename).
 - **GQL monitor** and **RPC monitors** write into `monitor_states` in-memory; not persisted across restarts.
 - **RWLocks** are `tokio::sync::RwLock` (async), not `std::sync::RwLock`.
 
@@ -146,7 +146,7 @@ Source: `monitor.rs:morpho_address()` and `executor.rs:BotExecutor::MULTICALL3`.
 
 - Tests use `tempfile` for isolated config files — no real `config.toml` needed.
 - HTTP tests use `tower::ServiceExt::oneshot` against router directly — no real TCP listener.
-- `--test-threads=1` is required because tests write to `data/orders.json` etc. concurrently.
+- Tests write to `data/*.json` directly (no tmp-rename), so parallel execution is safe.
 - Mock external services (RPC, feishu, GQL) are NOT mocked — tests only cover pure logic and API routing.
 
 ## Adding a new chain

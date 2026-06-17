@@ -4,6 +4,7 @@
 [server]
 host = "0.0.0.0"
 port = 16800
+# data_dir = "data"
 
 [admin]
 # EIP-55 checksummed admin wallet address

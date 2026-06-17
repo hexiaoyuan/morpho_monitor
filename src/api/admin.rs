@@ -96,17 +96,14 @@ async fn persist_whitelist(state: &AppState) -> AppResult<()> {
     let json = serde_json::to_string_pretty(&*whitelist).map_err(|e| {
         AppError::Storage(format!("Failed to serialize whitelist: {}", e))
     })?;
-    let path = "data/whitelist.json";
-    let tmp = "data/whitelist.tmp";
+    let path = format!("{}/whitelist.json", state.data_dir);
 
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
-    std::fs::write(tmp, &json)
+    std::fs::write(&path, &json)
         .map_err(|e| AppError::Storage(format!("Failed to write whitelist: {}", e)))?;
-    std::fs::rename(tmp, path)
-        .map_err(|e| AppError::Storage(format!("Failed to rename whitelist file: {}", e)))?;
     Ok(())
 }
 
@@ -132,7 +129,7 @@ mod tests {
             monitor_states: Arc::new(RwLock::new(HashMap::new())),
             nonce_store: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(AppConfig {
-                server: ServerConfig { host: "127.0.0.1".into(), port: 3000 },
+                server: ServerConfig { host: "127.0.0.1".into(), port: 3000, data_dir: "data".into() },
                 admin: AdminConfig { address: "0xAdmin00000000000000000000000000000000000000".into() },
                 hot_wallet: HotWalletConfig { private_key: "0xdead".into(), gas_min_balance: "0.1".into() },
                 gql_url: "https://api.morpho.org/graphql".into(),
@@ -147,6 +144,7 @@ mod tests {
                 flashbots: None,
             }),
             jwt_secret: "test-jwt-secret".into(),
+            data_dir: "data".into(),
         }
     }
 
@@ -182,7 +180,7 @@ mod tests {
             address: "0x1234567890123456789012345678901234567890".into(),
             nickname: "Bob".into(),
         };
-        add_to_whitelist(State(state.clone()), admin.clone(), Json(req))
+        let _ = add_to_whitelist(State(state.clone()), admin.clone(), Json(req))
             .await
             .unwrap();
 

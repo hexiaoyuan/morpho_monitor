@@ -125,7 +125,7 @@ mod tests {
             monitor_states: Arc::new(RwLock::new(HashMap::new())),
             nonce_store: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(AppConfig {
-                server: ServerConfig { host: "127.0.0.1".into(), port: 3000 },
+                server: ServerConfig { host: "127.0.0.1".into(), port: 3000, data_dir: "data".into() },
                 admin: AdminConfig { address: "0xAdmin00000000000000000000000000000000000000".into() },
                 hot_wallet: HotWalletConfig { private_key: "0xdead".into(), gas_min_balance: "0.1".into() },
                 gql_url: "https://api.morpho.org/graphql".into(),
@@ -140,6 +140,7 @@ mod tests {
                 flashbots: None,
             }),
             jwt_secret: "test-jwt-secret".into(),
+            data_dir: "data".into(),
         }
     }
 

@@ -1,6 +1,6 @@
 # 🛡️ morpho_monitor
 
-> Morpho 监控与实时告警系统,后台机器人条件触发平仓
+> Morpho监控,实时告警,机器人条件单平仓!
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -62,7 +62,7 @@ cp config.example.toml config.toml
 
 # 3. 构建 & 测试
 cargo build --release
-cargo test --lib -- --test-threads=1
+cargo test --lib
 
 # 4. 启动
 export MORPHO_HOT_WALLET_KEY="0x..."     # 热钱包私钥
@@ -108,8 +108,7 @@ mkdir -p data
 ## 🧪 测试
 
 ```bash
-# 运行全部测试（文件 I/O 测试需串行）
-cargo test --lib -- --test-threads=1
+cargo test --lib
 ```
 
 ```
@@ -130,7 +129,7 @@ test result: ok. 50 passed; 0 failed; 0 ignored
 | 前端 | HTML5 + TailwindCSS + Viem + Vanilla JS |
 | 通知 | 飞书开放平台 API |
 | 数据源 | Morpho GraphQL API (零配置回退) |
-| 数据存储 | 本地 JSON (原子写 rename) |
+| 数据存储 | 本地 JSON |
 
 ## 📖 文档
 

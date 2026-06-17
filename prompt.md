@@ -284,6 +284,7 @@ bytes32 constant AUTHORIZATION_TYPEHASH = keccak256(
 [server]
 host = "0.0.0.0"
 port = 16800
+# data_dir = "data"     # 数据文件目录
 
 [admin]
 address = "0xYourAdminAddress"      # EIP-55 校验格式
@@ -330,6 +331,7 @@ polling_interval_secs = 12
 | `MORPHO_ADMIN_ADDRESS` | 管理员地址 |
 | `MORPHO_JWT_SECRET` | JWT 签名密钥（不设则自动生成） |
 | `MORPHO_GQL_URL` | Morpho GraphQL API 地址 |
+| `MORPHO_DATA_DIR` | 数据目录（默认 `data`） |
 | `MORPHO_SERVER_PORT` | 服务端口（默认 16800） |
 | `RPC_ETH_WS` / `RPC_ETH_HTTP` | 以太坊 RPC |
 | `RPC_BASE_WS` / `RPC_BASE_HTTP` | Base RPC |
@@ -362,7 +364,7 @@ polling_interval_secs = 12
 ### 8.4 JSON 文件读写
 
 * 使用 `Arc<RwLock<HashMap<…>>>` 做内存缓存 + 定期 flush 到文件。
-* 写文件使用「先写临时文件 → `fs::rename` 原子替换」策略，防止写一半崩溃导致数据损坏。
+* 写文件使用「直接写入目标文件」策略，简单可靠。
 * 启动时若 JSON 文件损坏，记录错误日志并从空状态启动（或恢复备份）。
 
 ---
@@ -416,7 +418,7 @@ polling_interval_secs = 12
   * `orders.json` — CRUD（用户只能操作自己的订单，Admin 可全局查看）
   * `whitelist.json` — Admin 专属增删查
   * `alerts.json` — 用户配置自己的飞书通知目标
-  * JSON 文件读写工具函数（`Arc<RwLock<…>>` + 原子写策略）
+  * JSON 文件读写工具函数（`Arc<RwLock<…>>` + 直接写入）
 * **依赖**：Step 2（需要认证提取器校验权限）
 * **验收**：`curl` 测试各端点 CRUD，重启服务后数据持久化不丢失。
 

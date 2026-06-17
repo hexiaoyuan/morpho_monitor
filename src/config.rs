@@ -26,6 +26,8 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +87,10 @@ fn default_port() -> u16 {
     16800
 }
 
+fn default_data_dir() -> String {
+    "data".into()
+}
+
 fn default_gas_min() -> String {
     "0.1".into()
 }
@@ -117,6 +123,7 @@ impl AppConfig {
         if let Ok(v) = std::env::var("MORPHO_ADMIN_ADDRESS") { config.admin.address = v; }
         if let Ok(v) = std::env::var("MORPHO_HOT_WALLET_KEY") { config.hot_wallet.private_key = v; }
         if let Ok(v) = std::env::var("MORPHO_GQL_URL") { config.gql_url = v; }
+        if let Ok(v) = std::env::var("MORPHO_DATA_DIR") { config.server.data_dir = v; }
         if let Ok(v) = std::env::var("MORPHO_SERVER_PORT") {
             if let Ok(p) = v.parse() { config.server.port = p; }
         }
@@ -156,7 +163,7 @@ impl AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            server: ServerConfig { host: default_host(), port: default_port() },
+            server: ServerConfig { host: default_host(), port: default_port(), data_dir: default_data_dir() },
             admin: AdminConfig { address: String::new() },
             hot_wallet: HotWalletConfig { private_key: String::new(), gas_min_balance: default_gas_min() },
             gql_url: default_gql_url(),

@@ -176,6 +176,8 @@ pub struct AppState {
     pub jwt_secret: String,
     /// SIWE nonce store
     pub nonce_store: std::sync::Arc<tokio::sync::RwLock<HashMap<String, (String, i64)>>>,
+    /// Data directory path
+    pub data_dir: String,
 }
 
 // Re-export AppConfig from config

@@ -1,7 +1,7 @@
 {
-  "61d5cbb4-115a-4e58-95a4-fb6926defe8b": {
-    "id": "61d5cbb4-115a-4e58-95a4-fb6926defe8b",
-    "user_address": "0xowner",
+  "5d3fe8da-da6f-4c78-89c5-e322b78af7fe": {
+    "id": "5d3fe8da-da6f-4c78-89c5-e322b78af7fe",
+    "user_address": "0xuser1",
     "chain": "ethereum",
     "market_id": "0xMarket1",
     "trigger_type": "healthfactorbelow",
@@ -15,9 +15,9 @@
       "deadline": "0x0"
     },
     "signature": "0xdeadbeef",
-    "status": "active",
-    "created_at": 1781701655,
-    "updated_at": 1781701655,
+    "status": "cancelled",
+    "created_at": 1781703848,
+    "updated_at": 1781703848,
     "feishu_target": "ou_test"
   }
 }

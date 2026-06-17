@@ -9,21 +9,20 @@ pub mod models;
 pub mod monitor;
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub use error::{AppError, AppResult};
 pub use models::AppState;
 
-/// Initialize the application state from a config file and data directory.
-pub async fn init_app_state(config_path: &Path, jwt_secret: &str) -> AppResult<AppState> {
-    let config = Arc::new(config::AppConfig::load(config_path)?);
+/// Initialize the application state from an already-loaded config.
+pub async fn init_app_state(config: Arc<config::AppConfig>, jwt_secret: &str) -> AppResult<AppState> {
+    let data_dir = config.server.data_dir.clone();
 
     // Load persisted data
-    let orders = load_json_map("data/orders.json").unwrap_or_default();
-    let whitelist = load_json_map("data/whitelist.json").unwrap_or_default();
-    let alert_configs = load_json_map("data/alerts.json").unwrap_or_default();
+    let orders = load_json_map(&format!("{}/orders.json", data_dir)).unwrap_or_default();
+    let whitelist = load_json_map(&format!("{}/whitelist.json", data_dir)).unwrap_or_default();
+    let alert_configs = load_json_map(&format!("{}/alerts.json", data_dir)).unwrap_or_default();
 
     Ok(AppState {
         orders: Arc::new(RwLock::new(orders)),
@@ -33,6 +32,7 @@ pub async fn init_app_state(config_path: &Path, jwt_secret: &str) -> AppResult<A
         nonce_store: Arc::new(RwLock::new(HashMap::new())),
         config,
         jwt_secret: jwt_secret.to_string(),
+        data_dir,
     })
 }
 

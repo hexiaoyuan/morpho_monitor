@@ -126,10 +126,37 @@ impl GqlMonitor {
         }
 
         for order in &active_orders {
-            // Query market state from GQL
-            let market_info = self.query_market(&order.market_id).await?;
+            // Query market state from GQL — skip this order on error, don't abort the loop
+            let market_info = match self.query_market(&order.market_id).await {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("GQL market query failed for order {} (market={}): {}",
+                        order.id, order.market_id, e);
+                    // If market is genuinely not found, mark the order invalid
+                    if e.to_string().contains("Market not found") {
+                        let mut orders = state.orders.write().await;
+                        if let Some(o) = orders.get_mut(&order.id) {
+                            o.status = OrderStatus::Invalid;
+                            o.updated_at = Utc::now().timestamp();
+                            warn!("Marked order {} as Invalid: market not found", order.id);
+                        }
+                        alert_manager.notify_user(state, &order.user_address, &format!(
+                            "⚠️ 订单自动作废\n订单 {} 的市场 {} 在 GraphQL 中未找到，可能已过期。",
+                            order.id, order.market_id
+                        )).await;
+                    }
+                    continue;
+                }
+            };
             // Query position from GQL
-            let position = self.query_position(&order.market_id, &order.user_address).await?;
+            let position = match self.query_position(&order.market_id, &order.user_address).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("GQL position query failed for order {} (user={}): {}",
+                        order.id, order.user_address, e);
+                    continue;
+                }
+            };
 
             // Compute health factor
             let health_factor = compute_health_factor(&market_info, &position);

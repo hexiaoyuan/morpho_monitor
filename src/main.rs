@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::info;
@@ -22,33 +21,38 @@ async fn main() {
         )
         .init();
 
-    // Load configuration
+    // Load configuration (need data_dir before JWT secret)
     let config_path = std::env::var("MORPHO_CONFIG")
         .unwrap_or_else(|_| "config.toml".to_string());
+    let app_config = morpho_monitor::config::AppConfig::load(
+        &std::path::PathBuf::from(&config_path),
+    )
+    .expect("Failed to load configuration — check config.toml");
+    let data_dir = &app_config.server.data_dir;
+
+    // Ensure data directory exists
+    std::fs::create_dir_all(data_dir).ok();
 
     // JWT secret — env var takes priority, otherwise persisted to file
     let jwt_secret = std::env::var("MORPHO_JWT_SECRET").unwrap_or_else(|_| {
-        let path = "data/jwt_secret";
-        std::fs::read_to_string(path)
+        let path = format!("{}/jwt_secret", data_dir);
+        std::fs::read_to_string(&path)
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
                 let secret = uuid::Uuid::new_v4().to_string();
-                std::fs::write(path, &secret).ok();
+                std::fs::write(&path, &secret).ok();
                 secret
             })
     });
 
-    // Ensure data directory exists
-    std::fs::create_dir_all("data").ok();
-
     let state = morpho_monitor::init_app_state(
-        &PathBuf::from(&config_path),
+        std::sync::Arc::new(app_config),
         &jwt_secret,
     )
     .await
-    .expect("Failed to initialize application state — check config.toml");
+    .expect("Failed to initialize application state");
 
     let server_config = state.config.server.clone();
     let alert_manager = AlertManager::new();
