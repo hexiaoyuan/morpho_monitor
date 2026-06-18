@@ -326,13 +326,14 @@ qsa('#tab-nav button').forEach(btn=>{btn.addEventListener('click',()=>{
 })});
 
 // ====== Orders ======
-async function refreshOrdersData(orders){if(!orders||!orders.length)return;const items=orders.map(o=>({id:o.market_id,chain:o.chain,type:o.order_type}));const unique=items.filter((v,i,a)=>a.findIndex(x=>x.id===v.id&&x.chain===v.chain)===i);await fetchWatchData(unique);}
+async function refreshOrdersData(orders){if(!orders||!orders.length)return;const ids=[...new Set(orders.map(o=>o.market_id))].join(',');try{const data=await api('GET','/orders/market-data?ids='+ids);if(data)Object.entries(data).forEach(([k,v])=>{WATCH_DATA_CACHE[k]=v})}catch(e){console.warn('market-data:',e)}}
 async function loadOrders(){if(!jwtToken)return;try{const o=await api('GET','/orders');await refreshOrdersData(o||[]);renderOrders(o||[])}catch(e){$('orders-list').innerHTML='<p class="tx-red tx-sm tx-center" style="padding:32px 0">加载失败: '+e.message+'</p>'}}
 function renderOrders(orders){
   if(!orders.length){$('orders-list').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0">暂无条件单</p>';return}
   const sc={monitoring:'badge-green',alerting:'badge-amber',liquidating:'badge-red',editing:'badge-blue',ended:'badge-gray'};
   const sl={monitoring:'监控中',alerting:'预警中',liquidating:'强平中',editing:'编辑中',ended:'已结束'};
   const typeBadge=o=>o.order_type==='vault'?'badge-blue':'badge-green';
+function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/10**Number(dec||18);if(n>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return '$'+(n/1e3).toFixed(2)+'K';return '$'+n.toFixed(2)}
   function conds(cg,oType,label){
     if(!cg)return'';
     const names=oType==='market'?['total_market','liquidity','supply_apy']:['total_deposits','liquidity','net_apy'];
@@ -344,13 +345,12 @@ function renderOrders(orders){
   $('orders-list').innerHTML=orders.map(o=>{
     const canCancel=o.status==='monitoring'||o.status==='alerting';
     const d=WATCH_DATA_CACHE[o.market_id];
-    const isVault=o.order_type==='vault'; const dec=d?.decimals||18;
     let stats='';
     if(d){
-      if(isVault){
-        stats='<div class="tx-xs" style="display:flex;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr);color:var(--t2)"><span>Deposits: '+fmtUsd(d.totalAssetsUsd)+'</span><span>Liquidity: '+fmtUsd(d.liquidityUsd)+'</span><span>APY: <span class="tx-green">'+formatApy(d.apy)+'</span></span></div>';
+      if(d.type==='vault'){
+        stats='<div class="tx-xs" style="display:flex;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr);color:var(--t2)"><span>Deposits: $'+Number(d.deposits).toLocaleString()+'</span><span>Liquidity: $'+Number(d.liquidity).toLocaleString()+'</span><span>APY: <span class="tx-green">'+(Number(d.apy)*100).toFixed(2)+'%</span></span></div>';
       }else{
-        stats='<div class="tx-xs" style="display:flex;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr);color:var(--t2)"><span>Total: '+formatToken(d.supply,dec)+'</span><span>Liquidity: '+formatToken(d.supply-d.borrow,dec)+'</span><span>APY: <span class="tx-green">'+formatApy(d.apy)+'</span></span></div>';
+        stats='<div class="tx-xs" style="display:flex;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr);color:var(--t2)"><span>Total: '+formatTokenSimple(d.total,d.decimals)+'</span><span>Liquidity: '+formatTokenSimple(d.liquidity,d.decimals)+'</span><span>APY: <span class="tx-green">'+(Number(d.apy)*100).toFixed(2)+'%</span></span></div>';
       }
     }
     return '<div class="card card-row"><div style="flex:1">'
@@ -361,12 +361,12 @@ function renderOrders(orders){
       +'<div class="tx-sm">'+conds(o.alert_conditions,o.order_type,'预警')+conds(o.liquidation?o.liquidation.conditions:null,o.order_type,'强平')+'</div>'
       +stats
       +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
-      +(d?' · 更新于 '+new Date(d.updatedAt).toLocaleTimeString():'')+'</div></div>'
-      +(canCancel?'<button class="btn-gray btn-sm" onclick="refreshOrderData(\''+o.market_id+'\')">🔄</button><button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button><button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
+      +(d?' · 更新于 '+new Date((d.updated_at||d.updatedAt)*1000).toLocaleTimeString():'')+'</div></div>'
+      +(canCancel?'<button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button><button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
       +'</div>';
   }).join('');
 }
-async function refreshOrderData(mid){const o=await api('GET','/orders');const order=(o||[]).find(x=>x.market_id===mid);if(order){await fetchWatchData([{id:order.market_id,chain:order.chain,type:order.order_type}]);renderOrders(o||[]);}}
+async function refreshOrderData(mid){const o=await api('GET','/orders');try{const data=await api('GET','/orders/market-data?ids='+mid);if(data&&data[mid])WATCH_DATA_CACHE[mid]=data[mid];renderOrders(o||[])}catch(e){}}
 async function refreshAllOrders(){await loadOrders()}
 function setOrderRefreshInterval(){
   const secs=parseInt($('order-refresh-interval').value);localStorage.setItem('morpho_order_refresh_secs',secs);
@@ -375,7 +375,7 @@ function setOrderRefreshInterval(){
 }
 function startOrderRefresh(){orderTabVisible=true;const secs=parseInt(localStorage.getItem('morpho_order_refresh_secs')||'0')||0;if(secs>0){if(orderRefreshTimer)clearInterval(orderRefreshTimer);orderRefreshTimer=setInterval(refreshAllOrders,secs*1000)}}
 function stopOrderRefresh(){orderTabVisible=false;if(orderRefreshTimer){clearInterval(orderRefreshTimer);orderRefreshTimer=null}}
-function initOrderRefresh(){const s=localStorage.getItem('morpho_order_refresh_secs');const secs=s?parseInt(s):0;const sel=$('order-refresh-interval');if(sel)sel.value=String(secs);if(secs>0&&orderTabVisible)startOrderRefresh()}
+function initOrderRefresh(){const s=localStorage.getItem('morpho_order_refresh_secs');const secs=s?parseInt(s):0;const sel=$('order-refresh-interval');if(sel)sel.value=String(secs);orderTabVisible=true;if(secs>0)startOrderRefresh()}
 function showCreateOrderModal(){if(!jwtToken){showToast('请先登录','warn');return}editingOrderId=null;resetOrderModal();onOrderTypeChange();$('order-modal').style.display=''}
 function closeOrderModal(){$('order-modal').style.display='none'}
 function resetOrderModal(){
@@ -599,7 +599,7 @@ function renderWatchlist(){
     +'<div class="hdr-r gap1"><button class="btn-gray btn-xs" onclick="refreshWatchData(\''+m.id+'\')">🔄</button><button class="btn-red btn-xs" onclick="removeWatchItem('+i+')">✕</button></div></div>'
     +'<div class="tx-xs tx-dim mb2"><span class="tx-mono">'+shortenAddr(m.id)+'</span> <button class="btn-gray btn-xs" onclick="copyText(\''+m.id+'\')">📋</button> '+m.chain+'</div>'
     +stats
-    +(d?'<div class="tx-right tx-xs tx-dim mt1">更新于 '+new Date(d.updatedAt).toLocaleTimeString()+'</div>':'<div class="tx-right tx-xs tx-dim mt1">未加载数据</div>')
+    +(d?'<div class="tx-right tx-xs tx-dim mt1">更新于 '+new Date((d.updated_at||d.updatedAt)*1000).toLocaleTimeString()+'</div>':'<div class="tx-right tx-xs tx-dim mt1">未加载数据</div>')
     +'</div>'}).join('');
 }
 function showAddModal(){$('add-modal').style.display=''}

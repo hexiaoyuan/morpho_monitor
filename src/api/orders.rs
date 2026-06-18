@@ -1,4 +1,5 @@
 use axum::extract::{Path, State};
+use std::collections::HashMap;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
@@ -7,13 +8,14 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    ApiResponse, AppState, CreateOrderRequest, LiquidationConfig, Order, OrderStatus,
+    ApiResponse, AppState, CachedData, CreateOrderRequest, LiquidationConfig, Order, OrderStatus,
 };
 
 /// Build the orders sub-router.
 pub fn order_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list_orders).post(create_order))
+        .route("/market-data", get(get_market_data))
         .route("/{id}", get(get_order).put(update_order).delete(delete_order))
 }
 
@@ -88,6 +90,24 @@ async fn list_orders(
     };
     result.sort_by_key(|o| -o.created_at);
 
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// GET /api/orders/market-data?ids=id1,id2,...
+async fn get_market_data(
+    State(state): State<AppState>,
+    _user: crate::auth::AuthUser,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ApiResponse<HashMap<String, CachedData>>>, AppError> {
+    let ids: Vec<&str> = params
+        .get("ids")
+        .map(|s| s.split(',').collect())
+        .unwrap_or_default();
+    let cache = state.market_cache.read().await;
+    let result: HashMap<String, CachedData> = ids
+        .iter()
+        .filter_map(|id| cache.get(*id).map(|v| (id.to_string(), v.clone())))
+        .collect();
     Ok(Json(ApiResponse::ok(result)))
 }
 
@@ -313,6 +333,7 @@ mod tests {
             }),
             jwt_secret: "test-jwt-secret".into(),
             data_dir: "data".into(),
+            market_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 

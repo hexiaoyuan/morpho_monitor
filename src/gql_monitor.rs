@@ -8,7 +8,7 @@ use alloy::primitives::U256;
 
 use crate::alert::{AlertDecision, AlertManager};
 use crate::error::AppResult;
-use crate::models::{AppState, ConditionGroup, LiquidationConfig, MetricCondition, MonitorState, Order, OrderStatus};
+use crate::models::{AppState, CachedData, ConditionGroup, LiquidationConfig, MetricCondition, MonitorState, Order, OrderStatus};
 
 // ---------------------------------------------------------------------------
 // Morpho GraphQL response types
@@ -32,7 +32,14 @@ struct MarketData {
 struct MarketInfo {
     #[allow(dead_code)]
     id: String,
+    loan_asset: Option<LoanAsset>,
     state: Option<MarketState>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoanAsset {
+    decimals: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +168,7 @@ impl GqlMonitor {
                             }
                         };
                         let reasons = evaluate_market_conditions(&order.alert_conditions, &mi);
+                        cache_market_data(state, &order.market_id, &mi).await;
                         (reasons, Some(mi), None)
                     }
                     "vault" => {
@@ -173,6 +181,7 @@ impl GqlMonitor {
                             }
                         };
                         let reasons = evaluate_vault_conditions(&order.alert_conditions, &vi);
+                        cache_vault_data(state, &order.market_id, &vi).await;
                         (reasons, None, Some(vi))
                     }
                     _ => continue,
@@ -405,7 +414,7 @@ impl GqlMonitor {
     /// Query market state from Morpho GraphQL.
     async fn query_market(&self, chain: &str, market_id: &str) -> AppResult<MarketInfo> {
         let cid = chain_id(chain);
-        let gql = format!("{{ marketById(chainId: {cid}, marketId: \"{mid}\") {{ id state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }} }}",
+        let gql = format!("{{ marketById(chainId: {cid}, marketId: \"{mid}\") {{ id loanAsset {{ decimals }} state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }} }}",
             cid = cid, mid = market_id);
         let query = serde_json::json!({"query": gql}).to_string();
 
@@ -519,6 +528,41 @@ fn chain_id(chain: &str) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Cache
+// ---------------------------------------------------------------------------
+
+async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
+    if let Some(ref st) = mi.state {
+        let total = st.supply_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
+        let borrow = st.borrow_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
+        let liq = total.checked_sub(borrow).unwrap_or(U256::ZERO);
+        let apy = st.supply_apy.unwrap_or(0.0);
+        let decimals = mi.loan_asset.as_ref().and_then(|a| a.decimals).unwrap_or(18);
+        let mut cache = state.market_cache.write().await;
+        cache.insert(market_id.to_string(), CachedData::Market {
+            total: total.to_string(),
+            liquidity: liq.to_string(),
+            apy: format!("{:.4}", apy),
+            decimals,
+            updated_at: Utc::now().timestamp(),
+        });
+    }
+}
+
+async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
+    let liq = vi.liquidity_usd.unwrap_or(0.0)
+        + vi.idle_assets_usd.unwrap_or(0.0)
+        + vi.force_deallocatable_liquidity_usd.unwrap_or(0.0);
+    let mut cache = state.market_cache.write().await;
+    cache.insert(vault_id.to_string(), CachedData::Vault {
+        deposits: format!("{:.2}", vi.total_assets_usd.unwrap_or(0.0)),
+        liquidity: format!("{:.2}", liq),
+        apy: format!("{:.4}", vi.avg_net_apy.unwrap_or(0.0)),
+        updated_at: Utc::now().timestamp(),
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Condition evaluation
 // ---------------------------------------------------------------------------
 
@@ -628,7 +672,7 @@ mod tests {
     #[test]
     fn test_evaluate_market_conditions() {
         let cond = ConditionGroup { liquidity: MetricCondition { enabled: true, upper: None, lower: Some("1000".into()) }, ..Default::default() };
-        let market = MarketInfo { id: "0x1".into(), state: Some(MarketState {
+        let market = MarketInfo { id: "0x1".into(), loan_asset: None, state: Some(MarketState {
             supply_assets: Some("2000".into()), supply_shares: Some("1000".into()),
             borrow_assets: Some("1500".into()), borrow_shares: Some("800".into()), supply_apy: Some(0.05),
         }) };

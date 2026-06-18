@@ -134,6 +134,7 @@ mod tests {
             }),
             jwt_secret: "test-jwt-secret".into(),
             data_dir: "data".into(),
+            market_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 

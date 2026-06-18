@@ -231,6 +231,27 @@ pub struct AppState {
     pub nonce_store: std::sync::Arc<tokio::sync::RwLock<HashMap<String, (String, i64)>>>,
     /// Data directory path
     pub data_dir: String,
+    /// GQL market data cache: market_id -> CachedData
+    pub market_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<String, CachedData>>>,
+}
+
+/// Cached market or vault data from GQL queries.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum CachedData {
+    Market {
+        total: String,
+        liquidity: String,
+        apy: String,
+        decimals: u32,
+        updated_at: i64,
+    },
+    Vault {
+        deposits: String,
+        liquidity: String,
+        apy: String,
+        updated_at: i64,
+    },
 }
 
 // Re-export AppConfig from config
