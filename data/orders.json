@@ -1,23 +1,31 @@
 {
-  "5d3fe8da-da6f-4c78-89c5-e322b78af7fe": {
-    "id": "5d3fe8da-da6f-4c78-89c5-e322b78af7fe",
-    "user_address": "0xuser1",
+  "3355edc1-8edd-4e62-99a7-c8dbc3aabfb1": {
+    "id": "3355edc1-8edd-4e62-99a7-c8dbc3aabfb1",
+    "user_address": "0xowner",
+    "name": "Test",
     "chain": "ethereum",
+    "order_type": "market",
     "market_id": "0xMarket1",
-    "trigger_type": "healthfactorbelow",
-    "trigger_threshold": "1.05",
-    "action": "closeposition",
-    "authorization": {
-      "authorizer": "0x0000000000000000000000000000000000000000",
-      "authorized": "0x0000000000000000000000000000000000000000",
-      "is_authorized": true,
-      "nonce": "0x0",
-      "deadline": "0x0"
+    "alert_conditions": {
+      "total_market": {
+        "enabled": false
+      },
+      "liquidity": {
+        "enabled": true,
+        "lower": "1.05"
+      },
+      "supply_apy": {
+        "enabled": false
+      },
+      "total_deposits": {
+        "enabled": false
+      },
+      "net_apy": {
+        "enabled": false
+      }
     },
-    "signature": "0xdeadbeef",
-    "status": "cancelled",
-    "created_at": 1781703848,
-    "updated_at": 1781703848,
-    "feishu_target": "ou_test"
+    "status": "monitoring",
+    "created_at": 1781769442,
+    "updated_at": 1781769442
   }
 }

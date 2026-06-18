@@ -29,70 +29,123 @@ impl Authorization {
 }
 
 // ---------------------------------------------------------------------------
-// Order (Conditional Order)
+// Order Status
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderStatus {
-    Active,
-    Triggered,
-    Executed,
-    Failed,
-    Invalid,
-    Cancelled,
+    /// Being created / edited by the user
+    Editing,
+    /// Actively monitoring
+    Monitoring,
+    /// Alert threshold triggered
+    Alerting,
+    /// Force liquidation triggered
+    Liquidating,
+    /// Completed or cancelled
+    Ended,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TriggerType {
-    /// Trigger when health factor drops below threshold
-    HealthFactorBelow,
-    /// Trigger when LLTV reaches a certain percentage
-    LltvAbove,
+// ---------------------------------------------------------------------------
+// Metric Conditions
+// ---------------------------------------------------------------------------
+
+/// A single metric condition with optional upper/lower bounds.
+/// When `enabled` is true and a bound is set, exceeding that bound
+/// triggers the condition.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct MetricCondition {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ActionType {
-    /// Withdraw collateral to user's wallet
-    WithdrawCollateral,
-    /// Repay borrow on behalf of user
-    RepayBorrow,
-    /// Close position entirely
-    ClosePosition,
+impl MetricCondition {
+    /// True when this metric is enabled and has at least one bound.
+    pub fn is_active(&self) -> bool {
+        self.enabled && (self.upper.is_some() || self.lower.is_some())
+    }
 }
 
-/// A conditional order placed by a user. Triggers when chain state
-/// meets the specified conditions.
+/// Condition groups for market and vault metrics.
+/// The order_type determines which subset is evaluated.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ConditionGroup {
+    // --- Market metrics ---
+    #[serde(default)]
+    pub total_market: MetricCondition,
+    #[serde(default)]
+    pub liquidity: MetricCondition,
+    #[serde(default)]
+    pub supply_apy: MetricCondition,
+
+    // --- Vault metrics ---
+    #[serde(default)]
+    pub total_deposits: MetricCondition,
+    #[serde(default)]
+    pub net_apy: MetricCondition,
+}
+
+impl ConditionGroup {
+    /// True if any individual metric is active.
+    pub fn has_active_conditions(&self) -> bool {
+        self.total_market.is_active()
+            || self.liquidity.is_active()
+            || self.supply_apy.is_active()
+            || self.total_deposits.is_active()
+            || self.net_apy.is_active()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Liquidation Config
+// ---------------------------------------------------------------------------
+
+/// Liquidation configuration — only present when the user enables
+/// force liquidation. Contains the EIP-712 authorization needed
+/// for the hot wallet to withdraw on the user's behalf.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiquidationConfig {
+    pub conditions: ConditionGroup,
+    pub authorization: Authorization,
+    pub signature: String,
+}
+
+// ---------------------------------------------------------------------------
+// Order
+// ---------------------------------------------------------------------------
+
+/// A conditional order placed by a user. Supports alert monitoring
+/// and optional force liquidation with EIP-712 authorization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     /// Unique order ID (UUID v4)
     pub id: String,
     /// User's cold wallet address (lowercase)
     pub user_address: String,
-    /// Chain identifier (e.g. "ethereum", "base", "hyperevm")
+    /// Human-readable display name
+    pub name: String,
+    /// Chain identifier (e.g. "ethereum", "base")
     pub chain: String,
-    /// Morpho market ID being monitored
+    /// "market" or "vault"
+    pub order_type: String,
+    /// Market / vault ID
     pub market_id: String,
-    /// Type of trigger condition
-    pub trigger_type: TriggerType,
-    /// Threshold value (e.g. health factor 1.05 = 5% above liquidation)
-    pub trigger_threshold: String,
-    /// Action to take
-    pub action: ActionType,
-    /// EIP-712 Authorization struct (for Morpho permission)
-    pub authorization: Authorization,
-    /// The user's EIP-712 signature over the Authorization
-    pub signature: String,
-    /// Current order status
+    /// Alert condition group (at least one metric must be active)
+    pub alert_conditions: ConditionGroup,
+    /// Optional liquidation config with its own conditions + EIP-712 sig
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidation: Option<LiquidationConfig>,
+    /// Current status
     pub status: OrderStatus,
     /// Unix timestamp when the order was created
     pub created_at: i64,
     /// Unix timestamp of last update
     pub updated_at: i64,
-    /// Optional: Feishu user open_id or webhook for notifications
-    pub feishu_target: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -206,13 +259,16 @@ pub struct LoginResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderRequest {
     pub chain: String,
+    pub name: String,
+    pub order_type: String,
     pub market_id: String,
-    pub trigger_type: TriggerType,
-    pub trigger_threshold: String,
-    pub action: ActionType,
-    pub authorization: Authorization,
-    pub signature: String,
-    pub feishu_target: Option<String>,
+    pub alert_conditions: ConditionGroup,
+    #[serde(default)]
+    pub liquidation_conditions: Option<ConditionGroup>,
+    #[serde(default)]
+    pub authorization: Option<Authorization>,
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 /// POST /api/admin/whitelist request body
@@ -290,32 +346,88 @@ mod tests {
     }
 
     #[test]
+    fn test_metric_condition_is_active() {
+        let c = MetricCondition { enabled: true, upper: Some("100".into()), lower: None };
+        assert!(c.is_active());
+
+        let c = MetricCondition { enabled: true, upper: None, lower: Some("50".into()) };
+        assert!(c.is_active());
+
+        let c = MetricCondition { enabled: false, upper: Some("100".into()), lower: Some("50".into()) };
+        assert!(!c.is_active());
+
+        let c = MetricCondition { enabled: true, upper: None, lower: None };
+        assert!(!c.is_active());
+    }
+
+    #[test]
+    fn test_condition_group_has_active() {
+        let mut cg = ConditionGroup::default();
+        assert!(!cg.has_active_conditions());
+
+        cg.liquidity = MetricCondition { enabled: true, upper: None, lower: Some("1.0".into()) };
+        assert!(cg.has_active_conditions());
+    }
+
+    #[test]
     fn test_order_serialization() {
         let order = Order {
             id: "test-id".into(),
             user_address: "0x123".into(),
+            name: "Test Order".into(),
             chain: "ethereum".into(),
+            order_type: "market".into(),
             market_id: "0xabc".into(),
-            trigger_type: TriggerType::HealthFactorBelow,
-            trigger_threshold: "1.05".into(),
-            action: ActionType::ClosePosition,
-            authorization: Authorization {
-                authorizer: Address::ZERO,
-                authorized: Address::ZERO,
-                is_authorized: true,
-                nonce: U256::ZERO,
-                deadline: U256::ZERO,
+            alert_conditions: ConditionGroup {
+                liquidity: MetricCondition { enabled: true, upper: None, lower: Some("1.0".into()) },
+                ..Default::default()
             },
-            signature: "0xdead".into(),
-            status: OrderStatus::Active,
+            liquidation: None,
+            status: OrderStatus::Monitoring,
             created_at: 1000,
             updated_at: 1000,
-            feishu_target: None,
         };
 
         let json = serde_json::to_string(&order).unwrap();
         let parsed: Order = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.id, "test-id");
-        assert_eq!(parsed.status, OrderStatus::Active);
+        assert_eq!(parsed.status, OrderStatus::Monitoring);
+        assert_eq!(parsed.order_type, "market");
     }
+
+    #[test]
+    fn test_order_serialization_with_liquidation() {
+        let order = Order {
+            id: "liq-id".into(),
+            user_address: "0x456".into(),
+            name: "Liq Order".into(),
+            chain: "base".into(),
+            order_type: "market".into(),
+            market_id: "0xdef".into(),
+            alert_conditions: ConditionGroup::default(),
+            liquidation: Some(LiquidationConfig {
+                conditions: ConditionGroup {
+                    liquidity: MetricCondition { enabled: true, upper: Some("2.0".into()), lower: None },
+                    ..Default::default()
+                },
+                authorization: Authorization {
+                    authorizer: Address::ZERO,
+                    authorized: Address::ZERO,
+                    is_authorized: true,
+                    nonce: U256::ZERO,
+                    deadline: U256::ZERO,
+                },
+                signature: "0xdead".into(),
+            }),
+            status: OrderStatus::Monitoring,
+            created_at: 2000,
+            updated_at: 2000,
+        };
+
+        let json = serde_json::to_string(&order).unwrap();
+        let parsed: Order = serde_json::from_str(&json).unwrap();
+        assert!(parsed.liquidation.is_some());
+        assert_eq!(parsed.liquidation.unwrap().signature, "0xdead");
+    }
+
 }

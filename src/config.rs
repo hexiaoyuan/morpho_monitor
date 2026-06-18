@@ -60,6 +60,22 @@ pub struct ChainsConfig {
     pub hyperevm: Option<ChainConfig>,
 }
 
+impl ChainsConfig {
+    /// Get the RPC HTTP URL for a chain by name.
+    pub fn chain_rpc_http(&self, chain: &str) -> Option<String> {
+        let cc = match chain {
+            "ethereum" => self.ethereum.as_ref(),
+            "base" => self.base.as_ref(),
+            "optimism" => self.optimism.as_ref(),
+            "arbitrum" => self.arbitrum.as_ref(),
+            "unichain" => self.unichain.as_ref(),
+            "hyperevm" => self.hyperevm.as_ref(),
+            _ => return None,
+        };
+        cc.and_then(|c| c.rpc_http.clone()).filter(|u| !u.is_empty())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChainConfig {
     #[serde(default)]

@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-50%20passed-green.svg)](.)
+[![Tests](https://img.shields.io/badge/tests-58%20passed-green.svg)](.)
 
 用户签署一次 EIP-712 授权，后端 24/7 监控多链 Morpho Blue 仓位健康度。触发清算阈值时，热钱包原子化执行清退并通过飞书秒级通知 — 解决冷/硬件钱包无法及时响应链上危机的痛点。
 
@@ -112,7 +112,7 @@ cargo test --lib
 ```
 
 ```
-test result: ok. 50 passed; 0 failed; 0 ignored
+test result: ok. 58 passed; 0 failed; 0 ignored
 ```
 
 ## 🛠️ 技术栈

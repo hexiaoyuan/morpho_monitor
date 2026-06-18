@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
@@ -6,68 +6,15 @@ use chrono::Utc;
 use std::str::FromStr;
 use tracing::{error, info, warn};
 
-use crate::alert::{AlertDecision, AlertManager};
+use crate::alert::AlertManager;
 use crate::error::AppResult;
-use crate::models::{AppState, MonitorState, Order, OrderStatus, TriggerType};
+use crate::models::{AppState, Order, OrderStatus};
 
 // ---------------------------------------------------------------------------
 // Morpho Blue Event Definitions
-// Note: field names with trailing underscore disambiguate indexed vs non-indexed
-// parameters that share the same name in the Solidity ABI.
 // ---------------------------------------------------------------------------
 
 alloy::sol! {
-    /// Emitted when supply collateral changes.
-    #[allow(missing_docs)]
-    event SupplyCollateral(
-        bytes32 indexed id,
-        address indexed caller,
-        address indexed onBehalf,
-        uint256 assets
-    );
-
-    /// Emitted when collateral is withdrawn.
-    #[allow(missing_docs)]
-    event WithdrawCollateral(
-        bytes32 indexed id,
-        address indexed caller,
-        address indexed onBehalf,
-        address receiver,
-        uint256 assets
-    );
-
-    /// Emitted when a borrow is taken.
-    #[allow(missing_docs)]
-    event Borrow(
-        bytes32 indexed id,
-        address caller,
-        address indexed onBehalf,
-        address receiver,
-        uint256 assets,
-        uint256 shares
-    );
-
-    /// Emitted when a borrow is repaid.
-    #[allow(missing_docs)]
-    event Repay(
-        bytes32 indexed id,
-        address caller,
-        address indexed onBehalf,
-        uint256 assets,
-        uint256 shares
-    );
-
-    /// Emitted when an authorization is set via signature.
-    #[allow(missing_docs)]
-    event AuthorizationSet(
-        address indexed authorizer,
-        address indexed authorized,
-        bool isAuthorized,
-        uint256 nonce,
-        uint256 deadline
-    );
-
-    /// Emitted when an authorizer's nonce is incremented.
     #[allow(missing_docs)]
     event NonceIncremented(
         bytes32 indexed id,
@@ -135,22 +82,23 @@ impl ChainMonitor {
         }
     }
 
-    /// Execute one polling cycle: fetch active orders for this chain,
-    /// check on-chain state, and evaluate alerts.
+    /// Execute one polling cycle: check nonce validity for active orders on this chain.
+    /// Condition evaluation is handled by the GQL monitor.
     async fn poll_chain(
         &self,
         provider: &impl Provider,
         state: &AppState,
         alert_manager: &AlertManager,
     ) -> AppResult<()> {
-        let now = Utc::now().timestamp();
-
-        // Get active orders for this chain
+        // Get monitoring / alerting orders for this chain
         let active_orders: Vec<Order> = {
             let orders = state.orders.read().await;
             orders
                 .values()
-                .filter(|o| o.chain == self.chain_name && o.status == OrderStatus::Active)
+                .filter(|o| {
+                    o.chain == self.chain_name
+                        && matches!(o.status, OrderStatus::Monitoring | OrderStatus::Alerting)
+                })
                 .cloned()
                 .collect()
         };
@@ -159,21 +107,13 @@ impl ChainMonitor {
             return Ok(());
         }
 
-        // For each active order, evaluate risk
         for order in &active_orders {
             // Check if the authorization nonce is still valid
-            if let Err(e) = self.check_nonce_validity(provider, order, state, alert_manager)
+            if let Err(e) = self
+                .check_nonce_validity(provider, order, state, alert_manager)
                 .await
             {
                 warn!("Nonce check failed for order {}: {}", order.id, e);
-                continue;
-            }
-
-            // Evaluate position health
-            if let Err(e) = self.evaluate_position_health(provider, order, state, alert_manager, now)
-                .await
-            {
-                warn!("Health eval failed for order {}: {}", order.id, e);
                 continue;
             }
         }
@@ -189,6 +129,12 @@ impl ChainMonitor {
         state: &AppState,
         alert_manager: &AlertManager,
     ) -> AppResult<()> {
+        // Only check if order has liquidation config with an authorization
+        let auth_nonce = match order.liquidation.as_ref() {
+            Some(lc) => lc.authorization.nonce,
+            None => return Ok(()),
+        };
+
         let authorizer = match Address::from_str(&order.user_address) {
             Ok(a) => a,
             Err(_) => {
@@ -208,23 +154,21 @@ impl ChainMonitor {
 
         for log in &logs {
             if let Ok(event) = NonceIncremented::decode_log(&log.inner) {
-                if event.newNonce > order.authorization.nonce {
+                if event.newNonce > auth_nonce {
                     warn!(
                         "Nonce for {} incremented from {} to {} — invalidating order {}",
-                        order.user_address,
-                        order.authorization.nonce,
-                        event.newNonce,
-                        order.id
+                        order.user_address, auth_nonce, event.newNonce, order.id
                     );
 
-                    // Mark order as invalid
+                    // Mark order ended
                     {
                         let mut orders = state.orders.write().await;
                         if let Some(o) = orders.get_mut(&order.id) {
-                            o.status = OrderStatus::Invalid;
+                            o.status = OrderStatus::Ended;
                             o.updated_at = Utc::now().timestamp();
                         }
                     }
+                    let _ = crate::api::orders::persist_orders(state).await;
 
                     // Reset alert state
                     alert_manager
@@ -232,98 +176,13 @@ impl ChainMonitor {
                         .await;
 
                     // Send notification
-                    alert_manager.notify_user(state, &order.user_address, &format!(
-                        "⚠️ 授权已失效\n订单 {} 因 Nonce 变更自动作废。\n请重新签署授权并创建新订单。",
-                        order.id
-                    )).await;
+                    alert_manager
+                        .notify_user(state, &order.user_address, &format!(
+                            "⚠️ 授权已失效\n订单 {} 因 Nonce 变更自动作废。\n请重新签署授权并创建新订单。",
+                            order.id
+                        ))
+                        .await;
                 }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Evaluate the position health for an order and trigger alerts/execution if needed.
-    async fn evaluate_position_health(
-        &self,
-        _provider: &impl Provider,
-        order: &Order,
-        state: &AppState,
-        alert_manager: &AlertManager,
-        now: i64,
-    ) -> AppResult<()> {
-        // In production, this would query Morpho Blue market state and user position.
-        // For now, we use the stored monitor state (updated via real RPC elsewhere).
-
-        let state_key =
-            AlertManager::state_key(&self.chain_name, &order.market_id, &order.user_address);
-
-        let health_factor = {
-            let monitor_states = state.monitor_states.read().await;
-            monitor_states
-                .get(&state_key)
-                .map(|ms| ms.health_factor)
-                .unwrap_or_default()
-        };
-
-        // Determine if risky
-        let threshold = U256::from_str(&order.trigger_threshold).unwrap_or(U256::ZERO);
-        let is_risky = match order.trigger_type {
-            TriggerType::HealthFactorBelow => {
-                health_factor < threshold && health_factor > U256::ZERO
-            }
-            TriggerType::LltvAbove => health_factor > threshold,
-        };
-
-        // Evaluate alert
-        let decision = alert_manager
-            .evaluate_risk(&self.chain_name, &order.market_id, &order.user_address, is_risky)
-            .await;
-
-        match decision {
-            AlertDecision::TriggerAlert => {
-                info!(
-                    "ALERT triggered for order {} (chain={}, market={}, user={})",
-                    order.id, self.chain_name, order.market_id, order.user_address
-                );
-
-                // Update monitor state
-                {
-                    let mut states = state.monitor_states.write().await;
-                    if let Some(ms) = states.get_mut(&state_key) {
-                        ms.last_updated = now;
-                    } else {
-                        states.insert(
-                            state_key.clone(),
-                            MonitorState {
-                                chain: self.chain_name.clone(),
-                                market_id: order.market_id.clone(),
-                                user_address: order.user_address.clone(),
-                                collateral_amount: U256::ZERO,
-                                borrow_amount: U256::ZERO,
-                                health_factor,
-                                last_updated: now,
-                            },
-                        );
-                    }
-                }
-
-                // Send feishu notification
-                alert_manager.notify_user(state, &order.user_address, &format!(
-                    "🚨 风险预警\n链: {}\n市场: {}\n当前健康因子: {}\n阈值: {}",
-                    self.chain_name, order.market_id, health_factor, order.trigger_threshold
-                )).await;
-                // TODO: Trigger bot executor for this order
-            }
-            AlertDecision::Recovered => {
-                info!("Recovery confirmed for order {} (chain={}, market={}, user={})", order.id, self.chain_name, order.market_id, order.user_address);
-                alert_manager.notify_user(state, &order.user_address, &format!(
-                    "✅ 风险已解除\n链: {}\n市场: {}",
-                    self.chain_name, order.market_id
-                )).await;
-            }
-            AlertDecision::Suppress => {
-                // No action needed
             }
         }
 
@@ -336,10 +195,10 @@ impl ChainMonitor {
 // ---------------------------------------------------------------------------
 
 /// Morpho Blue addresses per chain (source: https://docs.morpho.org/get-started/resources/addresses/)
-fn morpho_address(chain: &str) -> Address {
+pub fn morpho_address(chain: &str) -> Address {
     match chain {
         "ethereum" => "0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
-        "base"     => "0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
+        "base" => "0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
         "optimism" => "0xce95AfbB8EA029495c66020883F87aaE8864AF92",
         "arbitrum" => "0x6c247b1F6182318877311737BaC0844bAa518F5e",
         "unichain" => "0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A",
@@ -353,21 +212,23 @@ fn morpho_address(chain: &str) -> Address {
 /// Spawn monitor tasks for all configured chains.
 pub async fn start_monitors(state: AppState, alert_manager: AlertManager) {
     let chains = vec![
-        ("ethereum",  state.config.chains.ethereum.as_ref()),
-        ("base",      state.config.chains.base.as_ref()),
-        ("optimism",  state.config.chains.optimism.as_ref()),
-        ("arbitrum",  state.config.chains.arbitrum.as_ref()),
-        ("unichain",  state.config.chains.unichain.as_ref()),
-        ("hyperevm",  state.config.chains.hyperevm.as_ref()),
+        ("ethereum", state.config.chains.ethereum.as_ref()),
+        ("base", state.config.chains.base.as_ref()),
+        ("optimism", state.config.chains.optimism.as_ref()),
+        ("arbitrum", state.config.chains.arbitrum.as_ref()),
+        ("unichain", state.config.chains.unichain.as_ref()),
+        ("hyperevm", state.config.chains.hyperevm.as_ref()),
     ];
 
     for (name, chain_config) in chains {
         if let Some(cc) = chain_config {
-            // Only start RPC monitor if an HTTP RPC endpoint is configured
             let rpc_http = match &cc.rpc_http {
                 Some(url) if !url.is_empty() => url.clone(),
                 _ => {
-                    info!("Skipping RPC monitor for '{}': no rpc_http configured (GQL fallback covers it)", name);
+                    info!(
+                        "Skipping RPC monitor for '{}': no rpc_http configured (GQL fallback covers it)",
+                        name
+                    );
                     continue;
                 }
             };
@@ -401,13 +262,7 @@ mod tests {
 
     #[test]
     fn test_chain_monitor_creation() {
-        let monitor = ChainMonitor::new(
-            "ethereum",
-            "https://eth.example.com",
-            None,
-            12,
-            Address::ZERO,
-        );
+        let monitor = ChainMonitor::new("ethereum", "https://eth.example.com", None, 12, Address::ZERO);
         assert_eq!(monitor.chain_name, "ethereum");
         assert_eq!(monitor.rpc_http, "https://eth.example.com");
         assert_eq!(monitor.polling_interval_secs, 12);

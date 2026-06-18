@@ -19,10 +19,12 @@ pub use models::AppState;
 pub async fn init_app_state(config: Arc<config::AppConfig>, jwt_secret: &str) -> AppResult<AppState> {
     let data_dir = config.server.data_dir.clone();
 
-    // Load persisted data
-    let orders = load_json_map(&format!("{}/orders.json", data_dir)).unwrap_or_default();
-    let whitelist = load_json_map(&format!("{}/whitelist.json", data_dir)).unwrap_or_default();
-    let alert_configs = load_json_map(&format!("{}/alerts.json", data_dir)).unwrap_or_default();
+    let orders: HashMap<String, models::Order> =
+        load_json_map(&format!("{}/orders.json", data_dir)).unwrap_or_default();
+    let whitelist: HashMap<String, models::WhitelistEntry> =
+        load_json_map(&format!("{}/whitelist.json", data_dir)).unwrap_or_default();
+    let alert_configs: HashMap<String, models::AlertConfig> =
+        load_json_map(&format!("{}/alerts.json", data_dir)).unwrap_or_default();
 
     Ok(AppState {
         orders: Arc::new(RwLock::new(orders)),

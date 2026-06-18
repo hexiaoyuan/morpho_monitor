@@ -339,6 +339,178 @@ impl BotExecutor {
         }
     }
 
+    /// Execute withdrawal with retry loop: simulate first, only send on success.
+    /// Uses EIP-1559 gas with 0.01 gwei extra padding.
+    pub async fn execute_withdrawal_with_retry(
+        &self,
+        authorization: &Authorization,
+        signature: &str,
+        order: &crate::models::Order,
+    ) -> AppResult<String> {
+        let max_attempts: u32 = 10;
+        let retry_delay = std::time::Duration::from_secs(30);
+
+        let user_address = &order.user_address;
+        let authorizer: Address = user_address.parse().map_err(|_| {
+            AppError::Execution(format!("Invalid user address: {}", user_address))
+        })?;
+
+        let provider_url = self.flashbots_url.as_ref().unwrap_or(&self.rpc_url);
+        let url = provider_url.parse::<reqwest::Url>().map_err(|e| {
+            AppError::Config(format!("Invalid provider URL: {}", e))
+        })?;
+
+        for attempt in 1..=max_attempts {
+            info!(
+                "Liquidation attempt {}/{} for order {}",
+                attempt, max_attempts, order.id
+            );
+
+            // Build the transaction (uses a default MarketParams — in production,
+            // this should be fetched from the chain or GQL for the specific market)
+            let market_params = MarketParams {
+                loanToken: [0u8; 32].into(),
+                collateralToken: [1u8; 32].into(),
+                oracle: Address::ZERO,
+                irm: Address::ZERO,
+                lltv: U256::ZERO,
+            };
+            let assets = U256::ZERO; // will withdraw max available via Multicall
+
+            let tx = match self.build_atomic_transaction(
+                authorization,
+                signature,
+                &market_params,
+                assets,
+                authorizer,
+                authorizer,
+            ) {
+                Ok(tx) => tx,
+                Err(e) => {
+                    warn!(
+                        "Failed to build tx for order {} (attempt {}): {}",
+                        order.id, attempt, e
+                    );
+                    if attempt < max_attempts {
+                        tokio::time::sleep(retry_delay).await;
+                    }
+                    continue;
+                }
+            };
+
+            // SIMULATE first
+            let sim_provider = ProviderBuilder::new().connect_http(url.clone());
+            match sim_provider.call(tx.clone()).await {
+                Ok(_) => {
+                    info!(
+                        "Simulation passed for order {} (attempt {})",
+                        order.id, attempt
+                    );
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    warn!(
+                        "Simulation failed for order {} (attempt {}/{}): {}",
+                        order.id, attempt, max_attempts, err_str
+                    );
+                    if is_retryable_error(&err_str) && attempt < max_attempts {
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+                    return Err(AppError::Execution(format!(
+                        "Simulation failed (non-retryable): {}", err_str
+                    )));
+                }
+            }
+
+            // Simulation passed — build signed tx with EIP-1559 gas
+            let balance = self.check_balance().await?;
+            if balance < self.gas_min_balance {
+                return Err(AppError::Execution(format!(
+                    "Hot wallet balance too low: {} (min: {})",
+                    balance, self.gas_min_balance
+                )));
+            }
+
+            let signer = PrivateKeySigner::from_str(&self.private_key_hex).map_err(|e| {
+                AppError::Config(format!("Invalid hot wallet private key: {}", e))
+            })?;
+            let provider = ProviderBuilder::new().wallet(signer).connect_http(url.clone());
+
+            // Gas estimation with buffer
+            let gas = provider.estimate_gas(tx.clone()).await.map_err(|e| {
+                AppError::Execution(format!("Gas estimation failed: {}", e))
+            })?;
+            let gas_limit = gas * 120 / 100; // 20% buffer
+
+            // Get base fee and priority fee (Alloy v2 returns u128)
+            let base_fee: u128 = provider.get_gas_price().await.map_err(|e| {
+                AppError::RpcError(format!("Failed to get gas price: {}", e))
+            })?;
+            let max_priority_fee: u128 = provider
+                .get_max_priority_fee_per_gas()
+                .await
+                .unwrap_or(1_000_000_000u128); // fallback 1 gwei
+
+            // Add 0.01 gwei extra = 10_000_000 wei
+            let extra: u128 = 10_000_000;
+            let tx = tx
+                .with_gas_limit(gas_limit)
+                .with_max_fee_per_gas(base_fee + max_priority_fee + extra)
+                .with_max_priority_fee_per_gas(max_priority_fee + extra);
+
+            let pending = match provider.send_transaction(tx).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Tx send failed for order {} (attempt {}): {}", order.id, attempt, e);
+                    if attempt < max_attempts {
+                        tokio::time::sleep(retry_delay).await;
+                    }
+                    continue;
+                }
+            };
+
+            let tx_hash = format!("0x{}", hex::encode(pending.tx_hash()));
+            info!(
+                "Liquidation tx sent: {} for order {} (attempt {})",
+                tx_hash, order.id, attempt
+            );
+
+            match pending.get_receipt().await {
+                Ok(receipt) if receipt.status() => {
+                    info!(
+                        "Liquidation confirmed: {} (block={})",
+                        tx_hash,
+                        receipt.block_number.unwrap_or_default()
+                    );
+                    return Ok(tx_hash);
+                }
+                Ok(_) => {
+                    warn!("Liquidation tx reverted: {} (attempt {})", tx_hash, attempt);
+                    if attempt < max_attempts {
+                        tokio::time::sleep(retry_delay).await;
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get receipt for {} (attempt {}): {}",
+                        tx_hash, attempt, e
+                    );
+                    if attempt < max_attempts {
+                        tokio::time::sleep(retry_delay).await;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        Err(AppError::Execution(format!(
+            "All {} liquidation attempts failed for order {}",
+            max_attempts, order.id
+        )))
+    }
+
     /// Estimate the gas cost for a withdrawal transaction.
     pub async fn estimate_gas_cost(
         &self,
@@ -376,6 +548,20 @@ impl BotExecutor {
 
         Ok(U256::from(gas) * U256::from(gas_price))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Determine if a simulation revert error is retryable (transient,
+/// e.g. insufficient liquidity) vs fatal (permanent, e.g. invalid signature).
+fn is_retryable_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("notenoughliquidity")
+        || lower.contains("insufficient")
+        || lower.contains("erc20insufficientbalance")
+        || lower.contains("revert")
 }
 
 // ---------------------------------------------------------------------------

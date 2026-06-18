@@ -63,6 +63,12 @@ button:disabled{opacity:.4;cursor:default}
 /* Stats grid inside card */
 .card-stats{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-top:12px;padding-top:12px;border-top:1px solid var(--bdr);font-size:13px}
 .card-drag{cursor:grab;user-select:none}.card-drag:active{cursor:grabbing}.card-dragging{opacity:.4}
+.checkbox-label{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;font-weight:500}
+.checkbox-label input[type="checkbox"]{width:18px;height:18px;cursor:pointer}
+.cond-metric{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:8px;background:var(--c2);border-radius:6px;flex-wrap:nowrap}
+.cond-metric label{min-width:70px;font-size:12px;color:var(--t2);white-space:nowrap}
+.cond-metric input[type="checkbox"]{width:16px;height:16px;flex-shrink:0}
+.cond-metric input[type="text"]{padding:4px 6px;font-size:11px;min-width:60px}
 </style>
 <script type="importmap">
 { "imports": { "viem": "https://cdn.jsdelivr.net/npm/viem@2.52.2/+esm" } }
@@ -152,16 +158,28 @@ button:disabled{opacity:.4;cursor:default}
 
 <!-- Order Modal -->
 <div id="order-modal" class="modal" style="display:none">
-  <div class="modal-content">
+  <div class="modal-content" style="max-width:580px">
     <h3>新建条件单</h3>
+    <div class="form-group"><label>名称</label><input id="order-name" placeholder="ETH/USDC 监控" class="w-full"></div>
     <div class="form-group"><label>链</label><select id="order-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option></select></div>
-    <div class="form-group"><label>市场 ID</label><input id="order-add-id" placeholder="0x..." class="w-full"></div>
-    <div class="form-group"><label>触发条件</label><select id="order-trigger-type" class="w-full"><option value="healthfactorbelow">健康因子低于阈值</option><option value="lltvabove">LLTV 高于阈值</option></select></div>
-    <div class="form-group"><label>阈值</label><input id="order-threshold" placeholder="1.05" class="w-full"></div>
-    <div class="form-group"><label>执行动作</label><select id="order-action" class="w-full"><option value="closeposition">平仓</option><option value="withdrawcollateral">提取抵押品</option><option value="repayborrow">偿还借款</option></select></div>
-    <div class="form-group"><label>飞书通知目标（可选）</label><input id="order-feishu" placeholder="ou_xxxx" class="w-full"></div>
-    <p class="tx-amber tx-sm mb2" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--bdr)">⚠️ 需要签署 EIP-712 授权</p>
-    <button class="btn-primary w-full" onclick="signAndCreateOrder()">签名并创建条件单</button>
+    <div class="form-group"><label>类型</label><select id="order-type" class="w-full" onchange="onOrderTypeChange()"><option value="market">Market</option><option value="vault">Vault</option></select></div>
+    <div class="form-group"><label>Market / Vault ID</label><input id="order-target-id" placeholder="0x..." class="w-full"></div>
+
+    <!-- Alert -->
+    <div class="form-box">
+      <label class="checkbox-label"><input type="checkbox" id="alert-enabled" onchange="onAlertToggle()"> 🟡 预警条件</label>
+      <div id="alert-conds" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <!-- Liquidation -->
+    <div class="form-box">
+      <label class="checkbox-label"><input type="checkbox" id="liq-enabled" onchange="onLiqToggle()"> 🔴 强平条件 (需签署 EIP-712 授权)</label>
+      <div id="liq-conds" style="display:none;margin-top:12px">
+        <div id="liq-extra" class="tx-amber tx-sm mb2" style="padding-top:8px;border-top:1px solid var(--bdr)">⚠️ 需要签署 EIP-712 授权，请确保 Supply 份额 &gt; 0</div>
+      </div>
+    </div>
+
+    <button class="btn-primary w-full" id="submit-order-btn" onclick="createOrder()">创建条件单</button>
     <button class="btn-gray w-full mt2" onclick="closeOrderModal()">取消</button>
   </div>
 </div>
@@ -189,7 +207,7 @@ const DEFAULT_SERVER = 'http://localhost:16800';
 const LS_SERVER_KEY = 'morpho_server_url';
 function getServerUrl(){return localStorage.getItem(LS_SERVER_KEY)||DEFAULT_SERVER}
 function setServerUrl(u){localStorage.setItem(LS_SERVER_KEY,u)}
-let API_BASE=getServerUrl()+'/api',jwtToken=null,userRole=null,userAccount=null;
+let API_BASE=getServerUrl()+'/api',jwtToken=null,userRole=null,userAccount=null,editingOrderId=null,editingAuth=null,editingSig=null;
 
 // ====== Helpers ======
 const $=id=>document.getElementById(id);
@@ -295,39 +313,191 @@ qsa('#tab-nav button').forEach(btn=>{btn.addEventListener('click',()=>{
 async function loadOrders(){if(!jwtToken)return;try{const o=await api('GET','/orders');renderOrders(o||[])}catch(e){$('orders-list').innerHTML='<p class="tx-red tx-sm tx-center" style="padding:32px 0">加载失败: '+e.message+'</p>'}}
 function renderOrders(orders){
   if(!orders.length){$('orders-list').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0">暂无条件单</p>';return}
-  const bc={active:'badge-green',triggered:'badge-amber',executed:'badge-blue',failed:'badge-red',invalid:'badge-gray',cancelled:'badge-gray'};
-  const bl={active:'活跃',triggered:'已触发',executed:'已执行',failed:'失败',invalid:'已失效',cancelled:'已取消'};
-  $('orders-list').innerHTML=orders.map(o=>'<div class="card card-row">'
-    +'<div style="flex:1"><div class="mb1"><span class="badge '+(bc[o.status]||'badge-gray')+'">'+(bl[o.status]||o.status)+'</span>'
-    +' <span class="tx-xs tx-mid">'+o.chain+'</span> <span class="tx-xs tx-dim tx-mono">'+shortenAddr(o.market_id)+'</span></div>'
-    +'<div class="tx-sm">触发: <span>'+o.trigger_type+' '+o.trigger_threshold+'</span> &nbsp;动作: <span class="tx-green">'+o.action+'</span></div>'
-    +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · 创建于 '+new Date(o.created_at*1000).toLocaleString()+'</div></div>'
-    +(o.status==='active'?'<button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">取消</button>':'')
+  const sc={monitoring:'badge-green',alerting:'badge-amber',liquidating:'badge-red',editing:'badge-blue',ended:'badge-gray'};
+  const sl={monitoring:'监控中',alerting:'预警中',liquidating:'强平中',editing:'编辑中',ended:'已结束'};
+  const typeBadge=o=>o.order_type==='vault'?'badge-blue':'badge-green';
+  function conds(cg,oType,label){
+    if(!cg)return'';
+    const names=oType==='market'?['total_market','liquidity','supply_apy']:['total_deposits','liquidity','net_apy'];
+    const active=names.filter(n=>cg[n]&&cg[n].enabled);
+    if(!active.length)return'';
+    const parts=active.map(n=>{const c=cg[n];const p=[];if(c.upper)p.push('&lt;'+c.upper);if(c.lower)p.push('&gt;'+c.lower);return n+':'+p.join(' & ');}).join('; ');
+    return '<span class="tx-'+((label==='强平')?'red':'amber')+'" style="font-size:11px">'+label+': '+parts+'</span> &nbsp;';
+  }
+  $('orders-list').innerHTML=orders.map(o=>{
+    const canCancel=o.status==='monitoring'||o.status==='alerting';
+    const d=WATCH_DATA_CACHE[o.market_id];
+    const isVault=o.order_type==='vault'; const dec=d?.decimals||18;
+    let stats='';
+    if(d){
+      if(isVault){
+        stats='<div class="card-stats"><span>Deposits</span><span class="tx-right">'+fmtUsd(d.totalAssetsUsd)+'</span><span>Liquidity</span><span class="tx-right">'+fmtUsd(d.liquidityUsd)+'</span><span>APY</span><span class="tx-right tx-green">'+formatApy(d.apy)+'</span></div>';
+      }else{
+        stats='<div class="card-stats"><span>Total</span><span class="tx-right">'+formatToken(d.supply,dec)+'</span><span>Liquidity</span><span class="tx-right">'+formatToken(d.supply-d.borrow,dec)+'</span><span>APY</span><span class="tx-right tx-green">'+formatApy(d.apy)+'</span></div>';
+      }
+    }
+    return '<div class="card card-row"><div style="flex:1">'
+      +'<div class="mb1"><span class="badge '+(sc[o.status]||'badge-gray')+'">'+(sl[o.status]||o.status)+'</span>'
+      +' <span class="tx-xs tx-mid">'+o.chain+'</span> <span class="badge '+typeBadge(o)+'" style="font-size:9px">'+o.order_type.toUpperCase()+'</span>'
+      +(o.name?' <span style="font-weight:500">'+o.name+'</span> ':'')
+      +'<span class="tx-xs tx-dim tx-mono" onclick="copyText(\''+o.market_id+'\')" title="点击复制" style="cursor:pointer">'+shortenAddr(o.market_id)+' 📋</span></div>'
+      +'<div class="tx-sm">'+conds(o.alert_conditions,o.order_type,'预警')+conds(o.liquidation?o.liquidation.conditions:null,o.order_type,'强平')+'</div>'
+      +stats
+      +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
+      +(d?' · 更新于 '+new Date(d.updatedAt).toLocaleTimeString():'')+'</div></div>'
+      +(canCancel?'<button class="btn-gray btn-sm" onclick="refreshOrderData(\''+o.market_id+'\')">🔄</button><button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button><button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
+      +'</div>';
+  }).join('');
+}
+async function refreshOrderData(mid){await refreshWatchData(mid);loadOrders()}
+function showCreateOrderModal(){if(!jwtToken){showToast('请先登录','warn');return}editingOrderId=null;resetOrderModal();onOrderTypeChange();$('order-modal').style.display=''}
+function closeOrderModal(){$('order-modal').style.display='none'}
+function resetOrderModal(){
+  editingOrderId=null;editingAuth=null;editingSig=null;
+  $('order-name').value='';$('order-chain').value='ethereum';$('order-type').value='market';$('order-target-id').value='';
+  $('alert-enabled').checked=false;$('liq-enabled').checked=false;
+  $('alert-conds').style.display='none';$('alert-conds').innerHTML='';
+  $('liq-conds').style.display='none';$('submit-order-btn').textContent='创建条件单';
+}
+async function editOrder(id){
+  if(!jwtToken)return;
+  try{
+    const order=await api('GET','/orders/'+id);
+    if(!order){showToast('订单未找到','error');return}
+    editingOrderId=id;
+    editingAuth=order.liquidation?order.liquidation.authorization:null;
+    editingSig=order.liquidation?order.liquidation.signature:null;
+    $('order-name').value=order.name||'';
+    $('order-chain').value=order.chain||'ethereum';
+    $('order-type').value=order.order_type||'market';
+    $('order-target-id').value=order.market_id||'';
+    // Alert conditions
+    const hasAlert=order.alert_conditions&&Object.values(order.alert_conditions).some(c=>c.enabled);
+    $('alert-enabled').checked=hasAlert;
+    if(hasAlert){$('alert-conds').style.display='';renderCondFields('alert');fillCondFields('alert',order.alert_conditions,order.order_type)}
+    else{$('alert-conds').style.display='none'}
+    // Liquidation conditions
+    const hasLiq=order.liquidation&&order.liquidation.conditions&&Object.values(order.liquidation.conditions).some(c=>c.enabled);
+    $('liq-enabled').checked=hasLiq;
+    if(hasLiq){$('liq-conds').style.display='';renderCondFields('liq');fillCondFields('liq',order.liquidation.conditions,order.order_type)}
+    else{$('liq-conds').style.display='none'}
+    $('submit-order-btn').textContent='保存修改';
+    $('order-modal').style.display='';
+  }catch(e){showToast('加载订单失败: '+e.message,'error')}
+}
+function fillCondFields(prefix,cg,oType){
+  const metrics=oType==='market'?getMarketMetrics():getVaultMetrics();
+  metrics.forEach(m=>{
+    const c=cg[m.id];if(!c||!c.enabled)return;
+    const en=$(prefix+'-'+m.id+'-enabled');if(en)en.checked=true;
+    const u=$(prefix+'-'+m.id+'-upper');if(u&&c.upper)u.value=c.upper;
+    const l=$(prefix+'-'+m.id+'-lower');if(l&&c.lower)l.value=c.lower;
+  });
+}
+function alertEnabled(){return $('alert-enabled').checked}
+function liqEnabled(){return $('liq-enabled').checked}
+function onAlertToggle(){const v=$('alert-enabled').checked;console.log('onAlertToggle',v);$('alert-conds').style.display=v?'':'none';if(v)renderCondFields('alert')}
+function onLiqToggle(){const v=$('liq-enabled').checked;console.log('onLiqToggle',v);$('liq-conds').style.display=v?'':'none';if(v)renderCondFields('liq')}
+function onOrderTypeChange(){console.log('onOrderTypeChange',getOrderType());if(alertEnabled())renderCondFields('alert');if(liqEnabled())renderCondFields('liq')}
+function getOrderType(){return $('order-type').value}
+function getMarketMetrics(){return[{id:'total_market',label:'Total Market'},{id:'liquidity',label:'Liquidity'},{id:'supply_apy',label:'Supply APY'}]}
+function getVaultMetrics(){return[{id:'total_deposits',label:'Total Deposits'},{id:'liquidity',label:'Liquidity'},{id:'net_apy',label:'Net APY'}]}
+function renderCondFields(prefix){
+  const metrics=getOrderType()==='market'?getMarketMetrics():getVaultMetrics();
+  const el=$(prefix+'-conds');
+  console.log('renderCondFields',prefix,'el='+!!el,'type='+getOrderType(),'metrics='+metrics.map(m=>m.id).join(','));
+  el.innerHTML=metrics.map(m=>'<div class="cond-metric">'
+    +'<input type="checkbox" id="'+prefix+'-'+m.id+'-enabled">'
+    +'<label>'+m.label+'</label>'
+    +'<input type="text" id="'+prefix+'-'+m.id+'-upper" placeholder="上限" style="width:40%">'
+    +'<input type="text" id="'+prefix+'-'+m.id+'-lower" placeholder="下限" style="width:40%">'
     +'</div>').join('');
 }
-function showCreateOrderModal(){if(!jwtToken){showToast('请先登录','warn');return}$('order-modal').style.display=''}
-function closeOrderModal(){$('order-modal').style.display='none'}
-async function signAndCreateOrder(){
-  if(!userAccount||!window.ethereum)return;
-  try{
-    const chain=$('order-chain').value,marketId=$('order-add-id').value.trim(),triggerType=$('order-trigger-type').value;
-    const threshold=$('order-threshold').value.trim(),action=$('order-action').value;
-    const feishuTarget=$('order-feishu').value.trim()||null;
-    if(!marketId||!threshold){showToast('请填写市场和阈值','warn');return}
-    const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999};
-    const MORPHO_ADDRS={1:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',8453:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',10:'0xce95AfbB8EA029495c66020883F87aaE8864AF92',42161:'0x6c247b1F6182318877311737BaC0844bAa518F5e',130:'0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A',999:'0x68e37dE8d93d3496ae143F2E900490f6280C57cD'};
-    const cid=CHAIN_IDS[chain]||1;
-    const domain={name:'MorphoBlue',version:'1',chainId:cid,verifyingContract:MORPHO_ADDRS[cid]||MORPHO_ADDRS[1]};
-    const types={Authorization:[{name:'authorizer',type:'address'},{name:'authorized',type:'address'},{name:'isAuthorized',type:'bool'},{name:'nonce',type:'uint256'},{name:'deadline',type:'uint256'}]};
-    const deadline=Math.floor(Date.now()/1000)+365*24*3600;
-    const msg={authorizer:userAccount,authorized:userAccount,isAuthorized:true,nonce:'0',deadline:String(deadline)};
-    showToast('请在钱包中签署 EIP-712 授权...','info');
-    const sig=await window.ethereum.request({method:'eth_signTypedData_v4',params:[userAccount,JSON.stringify({domain,types,primaryType:'Authorization',message:msg})]});
-    await api('POST','/orders',{chain,market_id:marketId,trigger_type:triggerType,trigger_threshold:threshold,action,authorization:{authorizer:userAccount,authorized:userAccount,is_authorized:true,nonce:'0',deadline:String(deadline)},signature:sig,feishu_target:feishuTarget});
-    closeOrderModal();showToast('条件单创建成功!','success');loadOrders();
-  }catch(e){showToast('创建失败: '+e.message,'error')}
+function readConditionGroup(prefix){
+  const metrics=getOrderType()==='market'?getMarketMetrics():getVaultMetrics();
+  const cg={total_market:{enabled:false,upper:null,lower:null},liquidity:{enabled:false,upper:null,lower:null},supply_apy:{enabled:false,upper:null,lower:null},total_deposits:{enabled:false,upper:null,lower:null},net_apy:{enabled:false,upper:null,lower:null}};
+  metrics.forEach(m=>{
+    const en=$(prefix+'-'+m.id+'-enabled');if(!en)return;
+    const e=en.checked;
+    const u=$(prefix+'-'+m.id+'-upper');const uv=u?u.value.trim():'';
+    const l=$(prefix+'-'+m.id+'-lower');const lv=l?l.value.trim():'';
+    cg[m.id]={enabled:e,upper:uv||null,lower:lv||null};
+  });
+  console.log('readConditionGroup',prefix,JSON.stringify(cg));
+  return cg;
 }
-async function cancelOrder(id){if(!confirm('确认取消？'))return;try{await api('DELETE','/orders/'+id);showToast('已取消','success');loadOrders()}catch(e){showToast('取消失败: '+e.message,'error')}}
+async function checkSupplyShares(chain,marketId,orderType){
+  try{
+    const cid=CHAIN_IDS[chain]||1;
+    let query;
+    if(orderType==='market'){
+      query='{ position(marketId: "'+marketId+'", user: "'+userAccount+'") { supplyShares } }';
+    }else{
+      query='{ vaultV2ByAddress(address: "'+marketId+'") { id } }';
+    }
+    const resp=await fetch(GQL_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});
+    const json=await resp.json();
+    if(orderType==='market'){
+      const shares=json?.data?.position?.supplyShares||'0';
+      return BigInt(shares)>0n;
+    }
+    return true;
+  }catch(e){console.error('check supply:',e);return false}
+}
+async function createOrder(){
+  if(!userAccount||!window.ethereum)return;
+  const name=$('order-name').value.trim()||marketId;
+  const chain=$('order-chain').value;
+  const orderType=getOrderType();
+  const marketId=$('order-target-id').value.trim();
+  if(!marketId){showToast('请输入 Market/Vault ID','warn');return}
+  console.log('createOrder','alertEnabled='+alertEnabled(),'liqEnabled='+liqEnabled(),'orderType='+orderType);
+  const alertConds=alertEnabled()?readConditionGroup('alert'):{total_market:{},liquidity:{},supply_apy:{},total_deposits:{},net_apy:{}};
+  let liqConds=null,authorization=null,signature=null;
+  if(liqEnabled()){
+    liqConds=readConditionGroup('liq');
+    const hasActive=Object.values(liqConds).some(c=>c.enabled&&(c.upper||c.lower));
+    if(!hasActive){showToast('强平条件未启用任何指标','warn');return}
+    if(editingOrderId&&editingAuth&&editingSig){
+      // Editing: reuse existing authorization+signature
+      authorization=editingAuth;signature=editingSig;
+    }else{
+      // New: check supply & sign
+      showToast('正在检查供应份额...','info');
+      const hasSupply=await checkSupplyShares(chain,marketId,orderType);
+      if(!hasSupply){showToast('供应份额为 0，无法签署强平授权','error');return}
+      showToast('请在钱包中签署 EIP-712 授权...','info');
+      try{const s=await signEIP712(chain);authorization=s.authorization;signature=s.signature}
+      catch(e){showToast('签名失败: '+e.message,'error');return}
+    }
+  }
+  const hasAlert=alertEnabled()&&Object.values(alertConds).some(c=>c.enabled&&(c.upper||c.lower));
+  const hasLiq=liqEnabled()&&liqConds&&Object.values(liqConds).some(c=>c.enabled&&(c.upper||c.lower));
+  console.log('createOrder check','alertEnabled='+alertEnabled(),'liqEnabled='+liqEnabled(),'hasAlert='+hasAlert,'hasLiq='+hasLiq,'alertConds='+JSON.stringify(alertConds),'liqConds='+JSON.stringify(liqConds));
+  if(!hasAlert&&!hasLiq){showToast('请至少启用一个预警或强平条件，并填写阈值（上限或下限）','warn');return}
+  const body={chain,name,order_type:orderType,market_id:marketId,alert_conditions:alertConds,
+    liquidation_conditions:liqConds,authorization,signature};
+  try{
+    if(editingOrderId){
+      await api('PUT','/orders/'+editingOrderId,body);showToast('条件单已更新','success');
+    }else{
+      await api('POST','/orders',body);showToast('条件单创建成功!','success');
+    }
+    closeOrderModal();resetOrderModal();loadOrders();
+  }catch(e){showToast((editingOrderId?'更新':'创建')+'失败: '+e.message,'error')}
+}
+async function signEIP712(chain){
+  const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999};
+  const MORPHO_ADDRS={1:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',8453:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',10:'0xce95AfbB8EA029495c66020883F87aaE8864AF92',42161:'0x6c247b1F6182318877311737BaC0844bAa518F5e',130:'0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A',999:'0x68e37dE8d93d3496ae143F2E900490f6280C57cD'};
+  const cid=CHAIN_IDS[chain]||1;
+  const domain={name:'MorphoBlue',version:'1',chainId:cid,verifyingContract:MORPHO_ADDRS[cid]||MORPHO_ADDRS[1]};
+  const types={Authorization:[{name:'authorizer',type:'address'},{name:'authorized',type:'address'},{name:'isAuthorized',type:'bool'},{name:'nonce',type:'uint256'},{name:'deadline',type:'uint256'}]};
+  const deadline=Math.floor(Date.now()/1000)+365*24*3600;
+  const msg={authorizer:userAccount,authorized:userAccount,isAuthorized:true,nonce:'0',deadline:String(deadline)};
+  const sig=await window.ethereum.request({method:'eth_signTypedData_v4',params:[userAccount,JSON.stringify({domain,types,primaryType:'Authorization',message:msg})]});
+  return{authorization:msg,signature:sig};
+}
+async function cancelOrder(id){if(!confirm('确认删除？'))return;try{await api('DELETE','/orders/'+id);showToast('已删除','success');loadOrders()}catch(e){showToast('删除失败: '+e.message,'error')}}
 
 // ====== Markets (GQL) ======
 const GQL_URL='https://api.morpho.org/graphql',WATCH_DATA_CACHE={};
@@ -454,7 +624,7 @@ $('server-url').value=getServerUrl();restoreSession();renderWatchlist();initWatc
 if(window.ethereum){window.ethereum.on('accountsChanged',()=>{clearSession();location.reload()});window.ethereum.on('chainChanged',()=>{clearSession();location.reload()})}
 
 // Expose onclick handlers
-Object.assign(window,{connectWallet,saveServerUrl,showCreateOrderModal,closeOrderModal,signAndCreateOrder,cancelOrder,showAddModal,closeAddModal,addWatchItem,removeWatchItem,refreshAllWatchData,refreshWatchData,copyText,copyAddr,setWatchRefreshInterval,saveMyFeishuConfig,testFeishuNotification,addToWhitelist,removeWhitelist,onDragStart,onDragEnd,onDragOver,onDrop});
+Object.assign(window,{connectWallet,saveServerUrl,showCreateOrderModal,closeOrderModal,createOrder,editOrder,onOrderTypeChange,onAlertToggle,onLiqToggle,cancelOrder,refreshOrderData,showAddModal,closeAddModal,addWatchItem,removeWatchItem,refreshAllWatchData,refreshWatchData,copyText,copyAddr,setWatchRefreshInterval,saveMyFeishuConfig,testFeishuNotification,addToWhitelist,removeWhitelist,onDragStart,onDragEnd,onDragOver,onDrop});
 </script>
 </body>
 </html>

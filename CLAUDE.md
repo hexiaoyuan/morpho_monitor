@@ -41,13 +41,13 @@ Request flow:
 | `main.rs` | Entry: tokio runtime, CORS, static files, spawns background monitors |
 | `lib.rs` | `init_app_state()` — loads config + 3 JSON files into `AppState` |
 | `config.rs` | `AppConfig::load()` — TOML file → env var overrides, `AppConfig::default()` fallback |
-| `models.rs` | All data types: `Order`, `Authorization`, `WhitelistEntry`, `AlertConfig`, `AppState`, `MonitorState`, API request/response types |
+| `models.rs` | All data types: `Order`, `OrderStatus`, `ConditionGroup`, `MetricCondition`, `LiquidationConfig`, `Authorization`, `WhitelistEntry`, `AlertConfig`, `AppState`, `MonitorState`, API request/response types |
 | `error.rs` | `AppError` enum (10 variants) → HTTP status codes via `IntoResponse` |
 | `auth.rs` | JWT create/verify, `AuthUser` extractor (`FromRequestParts`), SIWE verification |
 | `alert.rs` | `AlertState` debounce state machine, `AlertManager` (per-user feishu, token cache) |
-| `monitor.rs` | `ChainMonitor` — per-chain RPC polling, nonce invalidation, position health eval |
-| `gql_monitor.rs` | `GqlMonitor` — zero-config Morpho GraphQL polling (~60s), health factor approximation |
-| `executor.rs` | `BotExecutor` — atomic Multicall3 tx: `setAuthorizationWithSignature` + `withdrawCollateral` |
+| `monitor.rs` | `ChainMonitor` — per-chain RPC polling, nonce invalidation (condition eval delegated to GQL) |
+| `gql_monitor.rs` | `GqlMonitor` — zero-config Morpho GraphQL polling (~60s), multi-condition evaluation, vault query, state machine |
+| `executor.rs` | `BotExecutor` — atomic Multicall3 tx, retry loop with simulation, EIP-1559 gas + 0.01 gwei padding |
 | `api/mod.rs` | Router tree: `/api/auth`, `/api/orders`, `/api/alerts`, `/api/admin`, `/api/health` |
 | `api/auth.rs` | `GET /nonce`, `POST /login` |
 | `api/orders.rs` | CRUD: `GET/POST /`, `GET/PUT/DELETE /:id` |
@@ -101,9 +101,21 @@ POST /api/auth/login {message, signature}
 - `AuthUser` implements `FromRequestParts<AppState>` — reads `Authorization: Bearer <token>`, validates JWT, returns `{address, role}`.
 - Admin-only routes call `require_admin(&user)` which returns `AppError::Forbidden` if role != "admin".
 
+## Order lifecycle
+
+```
+Editing → Monitoring        (user saves order)
+Monitoring → Alerting       (any alert condition triggers)
+Monitoring → Liquidating    (liquidation condition triggers, skips alert)
+Alerting → Monitoring       (3 consecutive normal rounds → recovery)
+Alerting → Liquidating      (liquidation condition triggers)
+Liquidating → Ended         (withdrawal tx confirmed or failed)
+Any → Ended                 (user deletes order)
+```
+
 ## Alert debounce state machine
 
-Per position (key = `chain:market:user`), `AlertState` has:
+Per position (key = `chain:market:user`), `AlertState` controls notification backoff:
 
 ```
 in_alert: bool          — true = currently in risky state
@@ -113,7 +125,7 @@ normal_streak: u32      — consecutive normal rounds, need ≥3 for recovery
 ```
 
 Decision matrix:
-- First risk trigger → instant alert + execute, `backoff_level=1`
+- First risk trigger → instant alert, `backoff_level=1`
 - Ongoing risk + backoff elapsed → re-alert, `backoff_level++`
 - Ongoing risk within backoff → suppress
 - Normal detected while in_alert → `normal_streak++`, suppress until ≥3 → "recovered" notification
@@ -136,7 +148,7 @@ Source: `monitor.rs:morpho_address()` and `executor.rs:BotExecutor::MULTICALL3`.
 
 - **RPC monitors only start if `rpc_http` is configured** for that chain. Without RPC, the GQL monitor is the sole data source.
 - **GQL monitor is always-on** — launched unconditionally from `main.rs`, 60s polling.
-- **Feishu is per-user** — each user configures their own app credentials via `PUT /api/alerts`, stored in `alerts.json`. There is no global `[feishu]` config section.
+- **Feishu is per-user** — each user configures their own app credentials via `PUT /api/alerts`, stored in `alerts.json`. There is no global `[feishu]` config section. Orders no longer carry a `feishu_target` field — notifications route by `user_address`.
 - **Orders are validated but NOT verified on-chain at creation time** — the authorization signature is only validated when a tx is actually executed.
 - **Nonce invalidation** — the RPC monitor watches `NonceIncremented` events; if a user's nonce advances beyond the order's nonce, the order is marked `Invalid`.
 - **User addresses are always lowercase** — normalized at login and whitelist entry points.
