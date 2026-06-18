@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tracing::{info, warn};
 
@@ -66,15 +66,8 @@ async fn main() {
     let server_config = state.config.server.clone();
     let alert_manager = AlertManager::new();
 
-    // CORS — allow known frontend origins
-    let cors = CorsLayer::new()
-        .allow_origin([
-            "https://hexiaoyuan.github.io".parse().unwrap(),
-            "http://localhost:16800".parse().unwrap(),
-            "http://127.0.0.1:16800".parse().unwrap(),
-        ])
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // CORS — allow any origin (frontend may be deployed anywhere)
+    let cors = CorsLayer::permissive();
 
     // Build the API router
     let api_router = api::build_router(state.clone());
