@@ -58,6 +58,18 @@ pub struct ChainsConfig {
     pub unichain: Option<ChainConfig>,
     #[serde(default)]
     pub hyperevm: Option<ChainConfig>,
+    #[serde(default)]
+    pub monad: Option<ChainConfig>,
+    #[serde(default)]
+    pub katana: Option<ChainConfig>,
+    #[serde(default)]
+    pub polygon: Option<ChainConfig>,
+    #[serde(default)]
+    pub stable: Option<ChainConfig>,
+    #[serde(default)]
+    pub tempo: Option<ChainConfig>,
+    #[serde(default)]
+    pub worldchain: Option<ChainConfig>,
 }
 
 impl ChainsConfig {
@@ -70,6 +82,12 @@ impl ChainsConfig {
             "arbitrum" => self.arbitrum.as_ref(),
             "unichain" => self.unichain.as_ref(),
             "hyperevm" => self.hyperevm.as_ref(),
+            "monad" => self.monad.as_ref(),
+            "katana" => self.katana.as_ref(),
+            "polygon" => self.polygon.as_ref(),
+            "stable" => self.stable.as_ref(),
+            "tempo" => self.tempo.as_ref(),
+            "worldchain" => self.worldchain.as_ref(),
             _ => return None,
         };
         cc.and_then(|c| c.rpc_http.clone()).filter(|u| !u.is_empty())
@@ -164,6 +182,12 @@ impl AppConfig {
         env_override!(config, arbitrum, "RPC_ARBITRUM_HTTP", "RPC_ARBITRUM_WS");
         env_override!(config, unichain, "RPC_UNICHAIN_HTTP", "RPC_UNICHAIN_WS");
         env_override!(config, hyperevm, "RPC_HYPEREVM_HTTP");
+        env_override!(config, monad, "RPC_MONAD_HTTP");
+        env_override!(config, katana, "RPC_KATANA_HTTP");
+        env_override!(config, polygon, "RPC_POLYGON_HTTP");
+        env_override!(config, stable, "RPC_STABLE_HTTP");
+        env_override!(config, tempo, "RPC_TEMPO_HTTP");
+        env_override!(config, worldchain, "RPC_WORLDCHAIN_HTTP");
 
         // Validate minimum requirements
         if config.admin.address.is_empty() {

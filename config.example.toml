@@ -49,6 +49,30 @@ polling_interval_secs = 12
 # rpc_http = "https://rpc.hyperevm.xyz"
 # polling_interval_secs = 6
 
+# [chains.monad]
+# rpc_http = "https://rpc.monad.xyz"
+# polling_interval_secs = 12
+
+# [chains.katana]
+# rpc_http = "https://rpc.katana.xyz"
+# polling_interval_secs = 12
+
+# [chains.polygon]
+# rpc_http = "https://polygon-rpc.com"
+# polling_interval_secs = 12
+
+# [chains.stable]
+# rpc_http = "https://rpc.stable.xyz"
+# polling_interval_secs = 12
+
+# [chains.tempo]
+# rpc_http = "https://rpc.tempo.xyz"
+# polling_interval_secs = 12
+
+# [chains.worldchain]
+# rpc_http = "https://worldchain-mainnet.g.alchemy.com/public"
+# polling_interval_secs = 12
+
 # Optional: Flashbots for private transaction broadcast
 # [flashbots]
 # rpc_url = "https://rpc.flashbots.net"

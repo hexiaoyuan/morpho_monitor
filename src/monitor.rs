@@ -97,7 +97,7 @@ impl ChainMonitor {
                 .values()
                 .filter(|o| {
                     o.chain == self.chain_name
-                        && matches!(o.status, OrderStatus::Monitoring | OrderStatus::Alerting)
+                        && matches!(o.status, OrderStatus::Editing | OrderStatus::Monitoring | OrderStatus::Alerting)
                 })
                 .cloned()
                 .collect()
@@ -203,6 +203,12 @@ pub fn morpho_address(chain: &str) -> Address {
         "arbitrum" => "0x6c247b1F6182318877311737BaC0844bAa518F5e",
         "unichain" => "0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A",
         "hyperevm" => "0x68e37dE8d93d3496ae143F2E900490f6280C57cD",
+        "monad" => "0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee",
+        "katana" => "0xD50F2DffFd62f94Ee4AEd9ca05C61d0753268aBc",
+        "polygon" => "0x1bF0c2541F820E775182832f06c0B7Fc27A25f67",
+        "stable" => "0xa40103088A899514E3fe474cD3cc5bf811b1102e",
+        "tempo" => "0x10EE9AAC980A180dd4DcFc96C746d60B0EA88f97",
+        "worldchain" => "0xE741BC7c34758b4caE05062794E8Ae24978AF432",
         _ => "0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
     }
     .parse()
@@ -218,6 +224,12 @@ pub async fn start_monitors(state: AppState, alert_manager: AlertManager) {
         ("arbitrum", state.config.chains.arbitrum.as_ref()),
         ("unichain", state.config.chains.unichain.as_ref()),
         ("hyperevm", state.config.chains.hyperevm.as_ref()),
+        ("monad",       state.config.chains.monad.as_ref()),
+        ("katana",      state.config.chains.katana.as_ref()),
+        ("polygon",     state.config.chains.polygon.as_ref()),
+        ("stable",      state.config.chains.stable.as_ref()),
+        ("tempo",       state.config.chains.tempo.as_ref()),
+        ("worldchain",  state.config.chains.worldchain.as_ref()),
     ];
 
     for (name, chain_config) in chains {

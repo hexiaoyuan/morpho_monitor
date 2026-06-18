@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
-use tracing::info;
+use tracing::{info, warn};
 
 use morpho_monitor::alert::AlertManager;
 use morpho_monitor::api;
@@ -54,6 +54,15 @@ async fn main() {
     .await
     .expect("Failed to initialize application state");
 
+    // Display hot wallet address for verification
+    let hot_wallet_key = &state.config.hot_wallet.private_key;
+    if !hot_wallet_key.is_empty() {
+        match hot_wallet_key.parse::<alloy::signers::local::PrivateKeySigner>() {
+            Ok(signer) => info!("Hot wallet address: {}", signer.address()),
+            Err(e) => warn!("Invalid MORPHO_HOT_WALLET_KEY: {}", e),
+        }
+    }
+
     let server_config = state.config.server.clone();
     let alert_manager = AlertManager::new();
 
@@ -76,7 +85,7 @@ async fn main() {
         .fallback_service(ServeDir::new("static"));
 
     // Start GQL monitor (always on — zero-config fallback)
-    let gql_monitor = GqlMonitor::new(&state.config.gql_url, 60);
+    let gql_monitor = GqlMonitor::new(&state.config.gql_url, 12);
     tokio::spawn({
         let s = state.clone();
         let am = alert_manager.clone();

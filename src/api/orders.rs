@@ -77,7 +77,7 @@ async fn list_orders(
 ) -> Result<Json<ApiResponse<Vec<Order>>>, AppError> {
     let orders = state.orders.read().await;
 
-    let result: Vec<Order> = if user.is_admin() {
+    let mut result: Vec<Order> = if user.is_admin() {
         orders.values().cloned().collect()
     } else {
         orders
@@ -86,6 +86,7 @@ async fn list_orders(
             .cloned()
             .collect()
     };
+    result.sort_by_key(|o| -o.created_at);
 
     Ok(Json(ApiResponse::ok(result)))
 }
@@ -203,6 +204,10 @@ async fn update_order(
         order.liquidation = None;
     }
 
+    // Reset to Editing after user changes — GQL monitor picks up next poll
+    if order.status == OrderStatus::Alerting || order.status == OrderStatus::Monitoring {
+        order.status = OrderStatus::Editing;
+    }
     order.updated_at = now;
     let updated = order.clone();
     drop(orders);
@@ -302,7 +307,7 @@ mod tests {
                     optimism: None,
                     arbitrum: None,
                     unichain: None,
-                    hyperevm: None,
+                    hyperevm: None, monad: None, katana: None, polygon: None, stable: None, tempo: None, worldchain: None,
                 },
                 flashbots: None,
             }),

@@ -75,6 +75,7 @@ struct PositionInfo {
 
 #[derive(Debug, Deserialize)]
 struct VaultData {
+    #[serde(rename = "vaultV2ByAddress")]
     vault_v2_by_address: Option<VaultInfo>,
 }
 
@@ -83,6 +84,8 @@ struct VaultData {
 struct VaultInfo {
     total_assets_usd: Option<f64>,
     liquidity_usd: Option<f64>,
+    idle_assets_usd: Option<f64>,
+    force_deallocatable_liquidity_usd: Option<f64>,
     avg_net_apy: Option<f64>,
 }
 
@@ -132,7 +135,7 @@ impl GqlMonitor {
             let orders = state.orders.read().await;
             orders
                 .values()
-                .filter(|o| matches!(o.status, OrderStatus::Monitoring | OrderStatus::Alerting))
+                .filter(|o| matches!(o.status, OrderStatus::Editing | OrderStatus::Monitoring | OrderStatus::Alerting))
                 .cloned()
                 .collect()
         };
@@ -143,7 +146,7 @@ impl GqlMonitor {
 
         for order in &active_orders {
             // Evaluate based on order type
-            let (metrics_triggered, market_info_opt, vault_info_opt) =
+            let (alert_reasons, market_info_opt, vault_info_opt) =
                 match order.order_type.as_str() {
                     "market" => {
                         let mi = match self.query_market(&order.chain, &order.market_id).await {
@@ -157,8 +160,8 @@ impl GqlMonitor {
                                 continue;
                             }
                         };
-                        let triggered = evaluate_market_conditions(&order.alert_conditions, &mi);
-                        (triggered, Some(mi), None)
+                        let reasons = evaluate_market_conditions(&order.alert_conditions, &mi);
+                        (reasons, Some(mi), None)
                     }
                     "vault" => {
                         let vi = match self.query_vault(&order.chain, &order.market_id).await {
@@ -169,32 +172,30 @@ impl GqlMonitor {
                                 continue;
                             }
                         };
-                        let triggered = evaluate_vault_conditions(&order.alert_conditions, &vi);
-                        (triggered, None, Some(vi))
+                        let reasons = evaluate_vault_conditions(&order.alert_conditions, &vi);
+                        (reasons, None, Some(vi))
                     }
                     _ => continue,
                 };
+            let alert_triggered = !alert_reasons.is_empty();
 
             // Evaluate liquidation conditions if configured
-            let liquidation_triggered = order
+            let liq_reasons: Vec<String> = order
                 .liquidation
                 .as_ref()
                 .map(|lc| match order.order_type.as_str() {
-                    "market" => market_info_opt
-                        .as_ref()
-                        .map_or(false, |mi| evaluate_market_conditions(&lc.conditions, mi)),
-                    "vault" => vault_info_opt
-                        .as_ref()
-                        .map_or(false, |vi| evaluate_vault_conditions(&lc.conditions, vi)),
-                    _ => false,
+                    "market" => market_info_opt.as_ref().map_or(Vec::new(), |mi| evaluate_market_conditions(&lc.conditions, mi)),
+                    "vault" => vault_info_opt.as_ref().map_or(Vec::new(), |vi| evaluate_vault_conditions(&lc.conditions, vi)),
+                    _ => Vec::new(),
                 })
-                .unwrap_or(false);
+                .unwrap_or_default();
+            let liquidation_triggered = !liq_reasons.is_empty();
 
             // Update monitor state
             self.update_monitor_state(state, order, now).await;
 
             // State machine transition
-            self.transition_state(order, metrics_triggered, liquidation_triggered, state, alert_manager)
+            self.transition_state(order, alert_triggered, &alert_reasons, liquidation_triggered, &liq_reasons, state, alert_manager)
                 .await;
         }
 
@@ -237,11 +238,15 @@ impl GqlMonitor {
         &self,
         order: &Order,
         alert_triggered: bool,
+        alert_reasons: &[String],
         liquidation_triggered: bool,
+        liq_reasons: &[String],
         state: &AppState,
         alert_manager: &AlertManager,
     ) {
         let new_status = match (&order.status, alert_triggered, liquidation_triggered) {
+            // Editing → Monitoring (first poll after user edit)
+            (OrderStatus::Editing, _, _) => Some(OrderStatus::Monitoring),
             // Monitoring → Alerting on alert trigger
             (OrderStatus::Monitoring, true, false) => Some(OrderStatus::Alerting),
             // Monitoring → Liquidating on liquidation trigger (skip alert)
@@ -276,52 +281,30 @@ impl GqlMonitor {
                 drop(orders);
                 let _ = crate::api::orders::persist_orders(state).await;
 
+                let reasons_text = |reasons: &[String]| if reasons.is_empty() { String::new() } else { format!("\n触发条件:\n{}", reasons.iter().map(|r| format!("  • {}", r)).collect::<Vec<_>>().join("\n")) };
+                let tlabel = if order.order_type == "vault" { "Vault" } else { "Market" };
                 match status_copy {
                     OrderStatus::Alerting => {
-                        info!(
-                            "ALERT triggered for order {} (chain={}, type={}, target={})",
-                            order.id, order.chain, order.order_type, order.market_id
-                        );
-                        alert_manager
-                            .notify_user(state, &order.user_address, &format!(
-                                "🚨 预警已触发\n链: {}\n类型: {}\n目标: {}\n请关注市场变化。",
-                                order.chain,
-                                if order.order_type == "vault" { "Vault" } else { "Market" },
-                                order.market_id
-                            ))
-                            .await;
+                        info!("ALERT triggered for order {} (chain={}, type={}, target={})", order.id, order.chain, order.order_type, order.market_id);
+                        let msg = format!("🚨 预警已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}",
+                            order.name, order.chain, tlabel, order.market_id, reasons_text(alert_reasons));
+                        alert_manager.notify_user(state, &order.user_address, &msg).await;
                     }
                     OrderStatus::Liquidating => {
-                        info!(
-                            "LIQUIDATION triggered for order {} (chain={}, type={}, target={})",
-                            order.id, order.chain, order.order_type, order.market_id
-                        );
-                        alert_manager
-                            .notify_user(state, &order.user_address, &format!(
-                                "🔥 强平已触发\n链: {}\n类型: {}\n目标: {}\n系统正在执行提款...",
-                                order.chain,
-                                if order.order_type == "vault" { "Vault" } else { "Market" },
-                                order.market_id
-                            ))
-                            .await;
-                        // Spawn liquidation task
+                        info!("LIQUIDATION triggered for order {} (chain={}, type={}, target={})", order.id, order.chain, order.order_type, order.market_id);
+                        let msg = format!("🔥 强平已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}{}",
+                            order.name, order.chain, tlabel, order.market_id,
+                            reasons_text(alert_reasons), reasons_text(liq_reasons));
+                        alert_manager.notify_user(state, &order.user_address, &msg).await;
                         if let Some(ref lc) = order.liquidation {
-                            self.spawn_liquidation_task(
-                                order.clone(),
-                                lc.clone(),
-                                state.clone(),
-                            )
-                            .await;
+                            self.spawn_liquidation_task(order.clone(), lc.clone(), state.clone()).await;
                         }
                     }
                     OrderStatus::Monitoring => {
                         info!("Recovery confirmed for order {}", order.id);
-                        alert_manager
-                            .notify_user(state, &order.user_address, &format!(
-                                "✅ 预警已解除\n链: {}\n目标: {}",
-                                order.chain, order.market_id
-                            ))
-                            .await;
+                        let msg = format!("✅ 预警已解除\n名称: {}\n链: {}\n类型: {}\n目标: {}",
+                            order.name, order.chain, tlabel, order.market_id);
+                        alert_manager.notify_user(state, &order.user_address, &msg).await;
                     }
                     _ => {}
                 }
@@ -452,7 +435,7 @@ impl GqlMonitor {
     async fn query_vault(&self, chain: &str, vault_id: &str) -> AppResult<VaultInfo> {
         let cid = chain_id(chain);
         let gql = format!(
-            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd avgNetApy }} }}",
+            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd idleAssetsUsd forceDeallocatableLiquidityUsd avgNetApy }} }}",
             vid = vault_id, cid = cid
         );
         let query = serde_json::json!({"query": gql}).to_string();
@@ -525,6 +508,12 @@ fn chain_id(chain: &str) -> u32 {
         "arbitrum" => 42161,
         "unichain" => 130,
         "hyperevm" => 999,
+        "monad" => 143,
+        "katana" => 747474,
+        "polygon" => 137,
+        "stable" => 988,
+        "tempo" => 4217,
+        "worldchain" => 480,
         _ => 1,
     }
 }
@@ -533,84 +522,79 @@ fn chain_id(chain: &str) -> u32 {
 // Condition evaluation
 // ---------------------------------------------------------------------------
 
-/// Evaluate a U256 metric condition against a current value.
-fn evaluate_u256_condition(condition: &MetricCondition, current: U256) -> bool {
-    if !condition.is_active() {
-        return false;
-    }
+/// Evaluate a U256 metric condition, return triggered reasons.
+fn evaluate_u256_condition(name: &str, condition: &MetricCondition, current: U256) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !condition.is_active() { return reasons; }
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = U256::from_str(upper) {
             if current > limit {
-                return true;
+                reasons.push(format!("{} 当前值 {} > 上限 {}", name, current, limit));
             }
         }
     }
     if let Some(ref lower) = condition.lower {
         if let Ok(limit) = U256::from_str(lower) {
             if current < limit {
-                return true;
+                reasons.push(format!("{} 当前值 {} < 下限 {}", name, current, limit));
             }
         }
     }
-    false
+    reasons
 }
 
-/// Evaluate an f64 metric condition against a current value (APY, USD).
-fn evaluate_f64_condition(condition: &MetricCondition, current: f64) -> bool {
-    if !condition.is_active() {
-        return false;
-    }
+/// Evaluate an f64 metric condition, return triggered reasons.
+fn evaluate_f64_condition(name: &str, condition: &MetricCondition, current: f64) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !condition.is_active() { return reasons; }
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = upper.parse::<f64>() {
             if current > limit {
-                return true;
+                reasons.push(format!("{} 当前值 {:.4} > 上限 {}", name, current, limit));
             }
         }
     }
     if let Some(ref lower) = condition.lower {
         if let Ok(limit) = lower.parse::<f64>() {
             if current < limit {
-                return true;
+                reasons.push(format!("{} 当前值 {:.4} < 下限 {}", name, current, limit));
             }
         }
     }
-    false
+    reasons
 }
 
-/// Evaluate market conditions against market GQL data.
-fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> bool {
+/// Evaluate market conditions, return triggered metric details.
+fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> Vec<String> {
     let state = match market.state.as_ref() {
         Some(s) => s,
-        None => return false,
+        None => return Vec::new(),
     };
-
-    let total_assets = state
-        .supply_assets
-        .as_deref()
-        .and_then(|s| U256::from_str(s).ok())
-        .unwrap_or(U256::ZERO);
-    let total_borrow = state
-        .borrow_assets
-        .as_deref()
-        .and_then(|s| U256::from_str(s).ok())
-        .unwrap_or(U256::ZERO);
+    let total_assets = state.supply_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
+    let total_borrow = state.borrow_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
     let liquidity = total_assets.checked_sub(total_borrow).unwrap_or(U256::ZERO);
     let apy = state.supply_apy.unwrap_or(0.0);
 
-    evaluate_u256_condition(&cond.total_market, total_assets)
-        || evaluate_u256_condition(&cond.liquidity, liquidity)
-        || evaluate_f64_condition(&cond.supply_apy, apy)
+    let mut reasons = Vec::new();
+    reasons.extend(evaluate_u256_condition("Total Market", &cond.total_market, total_assets));
+    reasons.extend(evaluate_u256_condition("Liquidity", &cond.liquidity, liquidity));
+    reasons.extend(evaluate_f64_condition("Supply APY", &cond.supply_apy, apy));
+    reasons
 }
 
-/// Evaluate vault conditions against vault GQL data.
-fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> bool {
+/// Evaluate vault conditions, return triggered metric details.
+fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> Vec<String> {
     let total = vault.total_assets_usd.unwrap_or(0.0);
-    let liq = vault.liquidity_usd.unwrap_or(0.0);
+    let liq = vault.liquidity_usd.unwrap_or(0.0)
+        + vault.idle_assets_usd.unwrap_or(0.0)
+        + vault.force_deallocatable_liquidity_usd.unwrap_or(0.0);
     let apy = vault.avg_net_apy.unwrap_or(0.0);
 
-    evaluate_f64_condition(&cond.total_deposits, total)
-        || evaluate_f64_condition(&cond.liquidity, liq)
-        || evaluate_f64_condition(&cond.net_apy, apy)
+    let mut reasons = Vec::new();
+    reasons.extend(evaluate_f64_condition("Total Deposits", &cond.total_deposits, total));
+    reasons.extend(evaluate_f64_condition("Liquidity", &cond.liquidity, liq));
+    reasons.extend(evaluate_f64_condition("Net APY", &cond.net_apy, apy));
+    reasons
 }
 
 // ---------------------------------------------------------------------------
@@ -623,64 +607,33 @@ mod tests {
 
     #[test]
     fn test_evaluate_u256_condition() {
-        let c = MetricCondition {
-            enabled: true,
-            upper: Some("100".into()),
-            lower: Some("10".into()),
-        };
-        assert!(evaluate_u256_condition(&c, U256::from(200)));
-        assert!(evaluate_u256_condition(&c, U256::from(5)));
-        assert!(!evaluate_u256_condition(&c, U256::from(50)));
-
-        let c = MetricCondition {
-            enabled: false,
-            upper: Some("100".into()),
-            lower: None,
-        };
-        assert!(!evaluate_u256_condition(&c, U256::from(200)));
+        let c = MetricCondition { enabled: true, upper: Some("100".into()), lower: Some("10".into()) };
+        assert!(!evaluate_u256_condition("test", &c, U256::from(200)).is_empty());
+        assert!(!evaluate_u256_condition("test", &c, U256::from(5)).is_empty());
+        assert!(evaluate_u256_condition("test", &c, U256::from(50)).is_empty());
+        let c = MetricCondition { enabled: false, upper: Some("100".into()), lower: None };
+        assert!(evaluate_u256_condition("test", &c, U256::from(200)).is_empty());
     }
 
     #[test]
     fn test_evaluate_f64_condition() {
-        let c = MetricCondition {
-            enabled: true,
-            upper: Some("5.0".into()),
-            lower: Some("0.5".into()),
-        };
-        assert!(evaluate_f64_condition(&c, 10.0));
-        assert!(evaluate_f64_condition(&c, 0.1));
-        assert!(!evaluate_f64_condition(&c, 1.0));
-
-        let c = MetricCondition {
-            enabled: false,
-            upper: Some("5.0".into()),
-            lower: None,
-        };
-        assert!(!evaluate_f64_condition(&c, 10.0));
+        let c = MetricCondition { enabled: true, upper: Some("5.0".into()), lower: Some("0.5".into()) };
+        assert!(!evaluate_f64_condition("test", &c, 10.0).is_empty());
+        assert!(!evaluate_f64_condition("test", &c, 0.1).is_empty());
+        assert!(evaluate_f64_condition("test", &c, 1.0).is_empty());
+        let c = MetricCondition { enabled: false, upper: Some("5.0".into()), lower: None };
+        assert!(evaluate_f64_condition("test", &c, 10.0).is_empty());
     }
 
     #[test]
     fn test_evaluate_market_conditions() {
-        let cond = ConditionGroup {
-            liquidity: MetricCondition {
-                enabled: true,
-                upper: None,
-                lower: Some("1000".into()),
-            },
-            ..Default::default()
-        };
-        let market = MarketInfo {
-            id: "0x1".into(),
-            state: Some(MarketState {
-                supply_assets: Some("2000".into()),
-                supply_shares: Some("1000".into()),
-                borrow_assets: Some("1500".into()),
-                borrow_shares: Some("800".into()),
-                supply_apy: Some(0.05),
-            }),
-        };
+        let cond = ConditionGroup { liquidity: MetricCondition { enabled: true, upper: None, lower: Some("1000".into()) }, ..Default::default() };
+        let market = MarketInfo { id: "0x1".into(), state: Some(MarketState {
+            supply_assets: Some("2000".into()), supply_shares: Some("1000".into()),
+            borrow_assets: Some("1500".into()), borrow_shares: Some("800".into()), supply_apy: Some(0.05),
+        }) };
         // liquidity = 2000 - 1500 = 500, below threshold 1000 → triggered
-        assert!(evaluate_market_conditions(&cond, &market));
+        assert!(!evaluate_market_conditions(&cond, &market).is_empty());
     }
 
     #[test]

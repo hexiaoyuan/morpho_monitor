@@ -1,7 +1,7 @@
 {
-  "3355edc1-8edd-4e62-99a7-c8dbc3aabfb1": {
-    "id": "3355edc1-8edd-4e62-99a7-c8dbc3aabfb1",
-    "user_address": "0xowner",
+  "939a940a-4b45-4b8c-a785-f78af049556d": {
+    "id": "939a940a-4b45-4b8c-a785-f78af049556d",
+    "user_address": "0xuser1",
     "name": "Test",
     "chain": "ethereum",
     "order_type": "market",
@@ -24,8 +24,8 @@
         "enabled": false
       }
     },
-    "status": "monitoring",
-    "created_at": 1781769442,
-    "updated_at": 1781769442
+    "status": "ended",
+    "created_at": 1781792111,
+    "updated_at": 1781792111
   }
 }

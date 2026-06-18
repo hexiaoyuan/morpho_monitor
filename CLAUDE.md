@@ -46,7 +46,7 @@ Request flow:
 | `auth.rs` | JWT create/verify, `AuthUser` extractor (`FromRequestParts`), SIWE verification |
 | `alert.rs` | `AlertState` debounce state machine, `AlertManager` (per-user feishu, token cache) |
 | `monitor.rs` | `ChainMonitor` — per-chain RPC polling, nonce invalidation (condition eval delegated to GQL) |
-| `gql_monitor.rs` | `GqlMonitor` — zero-config Morpho GraphQL polling (~60s), multi-condition evaluation, vault query, state machine |
+| `gql_monitor.rs` | `GqlMonitor` — zero-config Morpho GraphQL polling (~12s), multi-condition evaluation, vault query, state machine |
 | `executor.rs` | `BotExecutor` — atomic Multicall3 tx, retry loop with simulation, EIP-1559 gas + 0.01 gwei padding |
 | `api/mod.rs` | Router tree: `/api/auth`, `/api/orders`, `/api/alerts`, `/api/admin`, `/api/health` |
 | `api/auth.rs` | `GET /nonce`, `POST /login` |
@@ -147,7 +147,7 @@ Source: `monitor.rs:morpho_address()` and `executor.rs:BotExecutor::MULTICALL3`.
 ## Key invariants
 
 - **RPC monitors only start if `rpc_http` is configured** for that chain. Without RPC, the GQL monitor is the sole data source.
-- **GQL monitor is always-on** — launched unconditionally from `main.rs`, 60s polling.
+- **GQL monitor is always-on** — launched unconditionally from `main.rs`, 12s polling.
 - **Feishu is per-user** — each user configures their own app credentials via `PUT /api/alerts`, stored in `alerts.json`. There is no global `[feishu]` config section. Orders no longer carry a `feishu_target` field — notifications route by `user_address`.
 - **Orders are validated but NOT verified on-chain at creation time** — the authorization signature is only validated when a tx is actually executed.
 - **Nonce invalidation** — the RPC monitor watches `NonceIncremented` events; if a user's nonce advances beyond the order's nonce, the order is marked `Invalid`.

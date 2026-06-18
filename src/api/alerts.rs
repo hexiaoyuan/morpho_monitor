@@ -128,7 +128,7 @@ mod tests {
                 gql_url: "https://api.morpho.org/graphql".into(),
                 chains: ChainsConfig {
                     ethereum: Some(ChainConfig { rpc_ws: None, rpc_http: Some("https://eth.example.com".into()), polling_interval_secs: 12 }),
-                    base: None, optimism: None, arbitrum: None, unichain: None, hyperevm: None,
+                    base: None, optimism: None, arbitrum: None, unichain: None, hyperevm: None, monad: None, katana: None, polygon: None, stable: None, tempo: None, worldchain: None,
                 },
                 flashbots: None,
             }),

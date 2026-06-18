@@ -139,7 +139,7 @@ mod tests {
                     optimism: None,
                     arbitrum: None,
                     unichain: None,
-                    hyperevm: None,
+                    hyperevm: None, monad: None, katana: None, polygon: None, stable: None, tempo: None, worldchain: None,
                 },
                 flashbots: None,
             }),

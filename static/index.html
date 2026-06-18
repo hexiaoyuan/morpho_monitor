@@ -104,7 +104,13 @@ button:disabled{opacity:.4;cursor:default}
 <!-- Tab: Orders -->
 <div id="tab-orders">
   <div class="card-row mb4">
-    <h2 style="font-size:16px;margin:0">条件单列表</h2>
+    <div class="hdr-r gap2">
+      <h2 style="font-size:16px;margin:0">条件单列表</h2>
+      <select id="order-refresh-interval" onchange="setOrderRefreshInterval()" class="w-auto">
+        <option value="0" selected>Never</option><option value="12">12秒</option><option value="60">1分钟</option><option value="120">2分钟</option><option value="300">5分钟</option>
+      </select>
+      <button class="btn-primary btn-sm" onclick="refreshAllOrders()">🔄 全部刷新</button>
+    </div>
     <button class="btn-green" id="create-order-btn" onclick="showCreateOrderModal()" disabled>+ 新建条件单</button>
   </div>
   <div id="orders-list"><p class="tx-center tx-dim" style="padding:32px 0">请先登录以查看条件单</p></div>
@@ -161,7 +167,7 @@ button:disabled{opacity:.4;cursor:default}
   <div class="modal-content" style="max-width:580px">
     <h3>新建条件单</h3>
     <div class="form-group"><label>名称</label><input id="order-name" placeholder="ETH/USDC 监控" class="w-full"></div>
-    <div class="form-group"><label>链</label><select id="order-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option></select></div>
+    <div class="form-group"><label>链</label><select id="order-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option><option value="monad">Monad</option><option value="katana">Katana</option><option value="polygon">Polygon</option><option value="stable">Stable</option><option value="tempo">Tempo</option><option value="worldchain">World Chain</option></select></div>
     <div class="form-group"><label>类型</label><select id="order-type" class="w-full" onchange="onOrderTypeChange()"><option value="market">Market</option><option value="vault">Vault</option></select></div>
     <div class="form-group"><label>Market / Vault ID</label><input id="order-target-id" placeholder="0x..." class="w-full"></div>
 
@@ -189,7 +195,7 @@ button:disabled{opacity:.4;cursor:default}
   <div class="modal-content" style="max-width:380px">
     <h3>添加自选</h3>
     <div class="form-group"><label>Type</label><select id="add-type" class="w-full"><option value="market">Market</option><option value="vault">Vault</option></select></div>
-    <div class="form-group"><label>Chain</label><select id="add-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option></select></div>
+    <div class="form-group"><label>Chain</label><select id="add-chain" class="w-full"><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="optimism">Optimism</option><option value="arbitrum">Arbitrum</option><option value="unichain">Unichain</option><option value="hyperevm">HyperEVM</option><option value="monad">Monad</option><option value="katana">Katana</option><option value="polygon">Polygon</option><option value="stable">Stable</option><option value="tempo">Tempo</option><option value="worldchain">World Chain</option></select></div>
     <div class="form-group"><label>Name</label><input id="add-name" placeholder="ETH / USDC" class="w-full"></div>
     <div class="form-group"><label>ID</label><input id="add-id" placeholder="0x..." class="w-full"></div>
     <button class="btn-green w-full" onclick="addWatchItem()">添加</button>
@@ -258,7 +264,13 @@ function clearSession(){
 }
 
 // ====== Network ======
-const KNOWN_CHAINS={1:{chainId:'0x1',chainName:'Ethereum',rpcUrls:['https://eth.llamarpc.com'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},8453:{chainId:'0x2105',chainName:'Base',rpcUrls:['https://mainnet.base.org'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},10:{chainId:'0xa',chainName:'Optimism',rpcUrls:['https://mainnet.optimism.io'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},42161:{chainId:'0xa4b1',chainName:'Arbitrum One',rpcUrls:['https://arb1.arbitrum.io/rpc'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},130:{chainId:'0x82',chainName:'Unichain',rpcUrls:['https://mainnet.unichain.org'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},999:{chainId:'0x3e7',chainName:'HyperEVM',rpcUrls:['https://rpc.hyperevm.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}}};
+const KNOWN_CHAINS={1:{chainId:'0x1',chainName:'Ethereum',rpcUrls:['https://eth.llamarpc.com'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},8453:{chainId:'0x2105',chainName:'Base',rpcUrls:['https://mainnet.base.org'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},10:{chainId:'0xa',chainName:'Optimism',rpcUrls:['https://mainnet.optimism.io'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},42161:{chainId:'0xa4b1',chainName:'Arbitrum One',rpcUrls:['https://arb1.arbitrum.io/rpc'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},130:{chainId:'0x82',chainName:'Unichain',rpcUrls:['https://mainnet.unichain.org'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},999:{chainId:'0x3e7',chainName:'HyperEVM',rpcUrls:['https://rpc.hyperevm.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},
+143:{chainId:'0x8f',chainName:'Monad',rpcUrls:['https://rpc.monad.xyz'],nativeCurrency:{name:'MON',symbol:'MON',decimals:18}},
+747474:{chainId:'0xb6872',chainName:'Katana',rpcUrls:['https://rpc.katana.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},
+137:{chainId:'0x89',chainName:'Polygon',rpcUrls:['https://polygon-rpc.com'],nativeCurrency:{name:'POL',symbol:'POL',decimals:18}},
+988:{chainId:'0x3dc',chainName:'Stable',rpcUrls:['https://rpc.stable.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},
+4217:{chainId:'0x1079',chainName:'Tempo',rpcUrls:['https://rpc.tempo.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},
+480:{chainId:'0x1e0',chainName:'World Chain',rpcUrls:['https://worldchain-mainnet.g.alchemy.com/public'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}}};
 async function switchNetwork(){
   if(!window.ethereum)return;
   const t=$('network-select').value;if(!t)return;
@@ -276,6 +288,9 @@ async function connectWallet(){
     userAccount=toChecksumAddress(accts[0]);
     const cid=await window.ethereum.request({method:'eth_chainId'});const cidNum=parseInt(cid,16);
     const addrEl=$('user-address');addrEl.textContent=shortenAddr(userAccount);addrEl.dataset.addr=userAccount;addrEl.style.display='';$('copy-addr-btn').style.display='';
+    // If wallet address matches cached session, skip SIWE
+    const cached=localStorage.getItem('morpho_address');
+    if(cached&&cached.toLowerCase()===userAccount.toLowerCase()){restoreSession();return}
     await siweLogin();
   }catch(e){showToast('连接失败: '+e.message,'error')}
 }
@@ -305,12 +320,14 @@ qsa('#tab-nav button').forEach(btn=>{btn.addEventListener('click',()=>{
   btn.classList.add('active');btn.style.borderBottomColor='var(--ac)';btn.style.color='var(--ac)';
   qsa('#tab-orders,#tab-markets,#tab-feishu,#tab-admin').forEach(c=>c.style.display='none');
   const tab=btn.dataset.tab;$('tab-'+tab).style.display='';
-  if(tab==='admin')loadWhitelist();if(tab==='orders')loadOrders();if(tab==='feishu')loadFeishuConfig();
+  if(tab==='admin')loadWhitelist();if(tab==='orders'){loadOrders();startOrderRefresh();}else stopOrderRefresh();
+  if(tab==='feishu')loadFeishuConfig();
   if(tab==='markets')startWatchRefresh();else stopWatchRefresh();
 })});
 
 // ====== Orders ======
-async function loadOrders(){if(!jwtToken)return;try{const o=await api('GET','/orders');renderOrders(o||[])}catch(e){$('orders-list').innerHTML='<p class="tx-red tx-sm tx-center" style="padding:32px 0">加载失败: '+e.message+'</p>'}}
+async function refreshOrdersData(orders){if(!orders||!orders.length)return;const items=orders.map(o=>({id:o.market_id,chain:o.chain,type:o.order_type}));const unique=items.filter((v,i,a)=>a.findIndex(x=>x.id===v.id&&x.chain===v.chain)===i);await fetchWatchData(unique);}
+async function loadOrders(){if(!jwtToken)return;try{const o=await api('GET','/orders');await refreshOrdersData(o||[]);renderOrders(o||[])}catch(e){$('orders-list').innerHTML='<p class="tx-red tx-sm tx-center" style="padding:32px 0">加载失败: '+e.message+'</p>'}}
 function renderOrders(orders){
   if(!orders.length){$('orders-list').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0">暂无条件单</p>';return}
   const sc={monitoring:'badge-green',alerting:'badge-amber',liquidating:'badge-red',editing:'badge-blue',ended:'badge-gray'};
@@ -322,7 +339,7 @@ function renderOrders(orders){
     const active=names.filter(n=>cg[n]&&cg[n].enabled);
     if(!active.length)return'';
     const parts=active.map(n=>{const c=cg[n];const p=[];if(c.upper)p.push('&lt;'+c.upper);if(c.lower)p.push('&gt;'+c.lower);return n+':'+p.join(' & ');}).join('; ');
-    return '<span class="tx-'+((label==='强平')?'red':'amber')+'" style="font-size:11px">'+label+': '+parts+'</span> &nbsp;';
+    return '<span class="tx-'+((label==='强平')?'red':'amber')+'" style="font-size:11px">'+label+'条件: '+parts+'</span> &nbsp;';
   }
   $('orders-list').innerHTML=orders.map(o=>{
     const canCancel=o.status==='monitoring'||o.status==='alerting';
@@ -331,16 +348,16 @@ function renderOrders(orders){
     let stats='';
     if(d){
       if(isVault){
-        stats='<div class="card-stats"><span>Deposits</span><span class="tx-right">'+fmtUsd(d.totalAssetsUsd)+'</span><span>Liquidity</span><span class="tx-right">'+fmtUsd(d.liquidityUsd)+'</span><span>APY</span><span class="tx-right tx-green">'+formatApy(d.apy)+'</span></div>';
+        stats='<div class="tx-xs" style="display:flex;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr);color:var(--t2)"><span>Deposits: '+fmtUsd(d.totalAssetsUsd)+'</span><span>Liquidity: '+fmtUsd(d.liquidityUsd)+'</span><span>APY: <span class="tx-green">'+formatApy(d.apy)+'</span></span></div>';
       }else{
-        stats='<div class="card-stats"><span>Total</span><span class="tx-right">'+formatToken(d.supply,dec)+'</span><span>Liquidity</span><span class="tx-right">'+formatToken(d.supply-d.borrow,dec)+'</span><span>APY</span><span class="tx-right tx-green">'+formatApy(d.apy)+'</span></div>';
+        stats='<div class="tx-xs" style="display:flex;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr);color:var(--t2)"><span>Total: '+formatToken(d.supply,dec)+'</span><span>Liquidity: '+formatToken(d.supply-d.borrow,dec)+'</span><span>APY: <span class="tx-green">'+formatApy(d.apy)+'</span></span></div>';
       }
     }
     return '<div class="card card-row"><div style="flex:1">'
       +'<div class="mb1"><span class="badge '+(sc[o.status]||'badge-gray')+'">'+(sl[o.status]||o.status)+'</span>'
       +' <span class="tx-xs tx-mid">'+o.chain+'</span> <span class="badge '+typeBadge(o)+'" style="font-size:9px">'+o.order_type.toUpperCase()+'</span>'
       +(o.name?' <span style="font-weight:500">'+o.name+'</span> ':'')
-      +'<span class="tx-xs tx-dim tx-mono" onclick="copyText(\''+o.market_id+'\')" title="点击复制" style="cursor:pointer">'+shortenAddr(o.market_id)+' 📋</span></div>'
+      +'<span class="tx-xs tx-dim tx-mono" onclick="copyText(\''+o.market_id+'\')" title="点击复制" style="cursor:pointer">'+shortenAddr(o.market_id)+' 📋</span> '+' <a href="https://app.morpho.org/'+o.chain+'/'+o.order_type+'/'+o.market_id+'" target="_blank" title="Morpho 官网" class="btn-gray btn-xs">🌐</a></div>'
       +'<div class="tx-sm">'+conds(o.alert_conditions,o.order_type,'预警')+conds(o.liquidation?o.liquidation.conditions:null,o.order_type,'强平')+'</div>'
       +stats
       +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
@@ -349,7 +366,16 @@ function renderOrders(orders){
       +'</div>';
   }).join('');
 }
-async function refreshOrderData(mid){await refreshWatchData(mid);loadOrders()}
+async function refreshOrderData(mid){const o=await api('GET','/orders');const order=(o||[]).find(x=>x.market_id===mid);if(order){await fetchWatchData([{id:order.market_id,chain:order.chain,type:order.order_type}]);renderOrders(o||[]);}}
+async function refreshAllOrders(){await loadOrders()}
+function setOrderRefreshInterval(){
+  const secs=parseInt($('order-refresh-interval').value);localStorage.setItem('morpho_order_refresh_secs',secs);
+  if(orderRefreshTimer){clearInterval(orderRefreshTimer);orderRefreshTimer=null}
+  if(secs>0&&orderTabVisible)orderRefreshTimer=setInterval(refreshAllOrders,secs*1000);
+}
+function startOrderRefresh(){orderTabVisible=true;const secs=parseInt(localStorage.getItem('morpho_order_refresh_secs')||'0')||0;if(secs>0){if(orderRefreshTimer)clearInterval(orderRefreshTimer);orderRefreshTimer=setInterval(refreshAllOrders,secs*1000)}}
+function stopOrderRefresh(){orderTabVisible=false;if(orderRefreshTimer){clearInterval(orderRefreshTimer);orderRefreshTimer=null}}
+function initOrderRefresh(){const s=localStorage.getItem('morpho_order_refresh_secs');const secs=s?parseInt(s):0;const sel=$('order-refresh-interval');if(sel)sel.value=String(secs);if(secs>0&&orderTabVisible)startOrderRefresh()}
 function showCreateOrderModal(){if(!jwtToken){showToast('请先登录','warn');return}editingOrderId=null;resetOrderModal();onOrderTypeChange();$('order-modal').style.display=''}
 function closeOrderModal(){$('order-modal').style.display='none'}
 function resetOrderModal(){
@@ -487,8 +513,14 @@ async function createOrder(){
   }catch(e){showToast((editingOrderId?'更新':'创建')+'失败: '+e.message,'error')}
 }
 async function signEIP712(chain){
-  const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999};
-  const MORPHO_ADDRS={1:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',8453:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',10:'0xce95AfbB8EA029495c66020883F87aaE8864AF92',42161:'0x6c247b1F6182318877311737BaC0844bAa518F5e',130:'0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A',999:'0x68e37dE8d93d3496ae143F2E900490f6280C57cD'};
+  const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999,monad:143,katana:747474,polygon:137,stable:988,tempo:4217,worldchain:480};
+  const MORPHO_ADDRS={1:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',8453:'0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',10:'0xce95AfbB8EA029495c66020883F87aaE8864AF92',42161:'0x6c247b1F6182318877311737BaC0844bAa518F5e',130:'0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A',999:'0x68e37dE8d93d3496ae143F2E900490f6280C57cD',
+143:'0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee',
+747474:'0xD50F2DffFd62f94Ee4AEd9ca05C61d0753268aBc',
+137:'0x1bF0c2541F820E775182832f06c0B7Fc27A25f67',
+988:'0xa40103088A899514E3fe474cD3cc5bf811b1102e',
+4217:'0x10EE9AAC980A180dd4DcFc96C746d60B0EA88f97',
+480:'0xE741BC7c34758b4caE05062794E8Ae24978AF432'};
   const cid=CHAIN_IDS[chain]||1;
   const domain={name:'MorphoBlue',version:'1',chainId:cid,verifyingContract:MORPHO_ADDRS[cid]||MORPHO_ADDRS[1]};
   const types={Authorization:[{name:'authorizer',type:'address'},{name:'authorized',type:'address'},{name:'isAuthorized',type:'bool'},{name:'nonce',type:'uint256'},{name:'deadline',type:'uint256'}]};
@@ -501,8 +533,8 @@ async function cancelOrder(id){if(!confirm('确认删除？'))return;try{await a
 
 // ====== Markets (GQL) ======
 const GQL_URL='https://api.morpho.org/graphql',WATCH_DATA_CACHE={};
-const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999};
-let watchRefreshTimer=null,watchTabVisible=false;
+const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999,monad:143,katana:747474,polygon:137,stable:988,tempo:4217,worldchain:480};
+let watchRefreshTimer=null,watchTabVisible=false,orderRefreshTimer=null,orderTabVisible=false;
 function getWatchlist(){try{return JSON.parse(localStorage.getItem('morpho_watchlist')||'[]')}catch{return[]}}
 function saveWatchlist(w){localStorage.setItem('morpho_watchlist',JSON.stringify(w))}
 async function fetchWatchData(items){
@@ -510,19 +542,19 @@ async function fetchWatchData(items){
   const aliases=items.map((m,i)=>{
     const cid=CHAIN_IDS[m.chain]||1;
     if(m.type==='vault'){
-      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { totalAssetsUsd liquidityUsd avgNetApy }';
+      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { totalAssetsUsd liquidityUsd idleAssetsUsd forceDeallocatableLiquidityUsd avgNetApy }';
     }
     return'm'+i+': marketById(chainId: '+cid+', marketId: "'+m.id+'") { loanAsset { decimals } state { supplyAssets borrowAssets supplyApy } }';
   }).join('\n');
   try{
     const resp=await fetch(GQL_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:'{ '+aliases+' }'})});
-    const json=await resp.json();if(json.errors){console.error('GQL:',json.errors);return}
+    const json=await resp.json();if(json.errors){const msg=JSON.stringify(json.errors);if(!msg.includes('unsupported chainId'))console.warn('GQL:',json.errors);return}
     const now=Date.now(),data=json?.data||{};
     items.forEach((m,i)=>{const item=data['m'+i];if(!item)return;
       if(m.type==='vault'){
         WATCH_DATA_CACHE[m.id]={
           totalAssetsUsd:item.totalAssetsUsd||0,
-          liquidityUsd:item.liquidityUsd||0,
+          liquidityUsd:(item.liquidityUsd||0)+(item.idleAssetsUsd||0)+(item.forceDeallocatableLiquidityUsd||0),
           apy:item.avgNetApy,decimals:0,updatedAt:now,
         };
       }else if(item?.state){
@@ -620,11 +652,11 @@ async function addToWhitelist(){
 async function removeWhitelist(a){if(!confirm('确认移除 '+shortenAddr(a)+'？'))return;try{await api('DELETE','/admin/whitelist/'+a);showToast('已移除','success');loadWhitelist()}catch(e){showToast('移除失败: '+e.message,'error')}}
 
 // ====== Init ======
-$('server-url').value=getServerUrl();restoreSession();renderWatchlist();initWatchRefresh();
-if(window.ethereum){window.ethereum.on('accountsChanged',()=>{clearSession();location.reload()});window.ethereum.on('chainChanged',()=>{clearSession();location.reload()})}
+$('server-url').value=getServerUrl();restoreSession();renderWatchlist();initWatchRefresh();initOrderRefresh();
+if(window.ethereum){window.ethereum.on('accountsChanged',()=>location.reload());window.ethereum.on('chainChanged',()=>location.reload())}
 
 // Expose onclick handlers
-Object.assign(window,{connectWallet,saveServerUrl,showCreateOrderModal,closeOrderModal,createOrder,editOrder,onOrderTypeChange,onAlertToggle,onLiqToggle,cancelOrder,refreshOrderData,showAddModal,closeAddModal,addWatchItem,removeWatchItem,refreshAllWatchData,refreshWatchData,copyText,copyAddr,setWatchRefreshInterval,saveMyFeishuConfig,testFeishuNotification,addToWhitelist,removeWhitelist,onDragStart,onDragEnd,onDragOver,onDrop});
+Object.assign(window,{connectWallet,saveServerUrl,showCreateOrderModal,closeOrderModal,createOrder,editOrder,onOrderTypeChange,onAlertToggle,onLiqToggle,cancelOrder,refreshOrderData,refreshAllOrders,setOrderRefreshInterval,showAddModal,closeAddModal,addWatchItem,removeWatchItem,refreshAllWatchData,refreshWatchData,copyText,copyAddr,setWatchRefreshInterval,saveMyFeishuConfig,testFeishuNotification,addToWhitelist,removeWhitelist,onDragStart,onDragEnd,onDragOver,onDrop});
 </script>
 </body>
 </html>
