@@ -41,8 +41,8 @@ axum-extra = { version = "0.10", features = ["typed-header"] }
 toml = "0.8"
 dotenvy = "0.15"
 
-# HTTP client (Feishu API)
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client (Feishu API) — rustls to avoid openssl for musl cross-compile
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # UUID (nonce generation)
 uuid = { version = "1", features = ["v4"] }
@@ -70,6 +70,6 @@ async-trait = "0.1"
 # Test fixtures
 tempfile = "3"
 # HTTP test client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # Mock server
 wiremock = "0.6"
