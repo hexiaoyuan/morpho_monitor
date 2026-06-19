@@ -343,7 +343,7 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
     return '<span class="tx-'+((label==='强平')?'red':'amber')+'" style="font-size:11px">'+label+'条件: '+parts+'</span> &nbsp;';
   }
   $('orders-list').innerHTML=orders.map(o=>{
-    const canCancel=o.status==='monitoring'||o.status==='alerting';
+    const canEdit=o.status!=='liquidating';
     const d=WATCH_DATA_CACHE[o.market_id];
     let stats='';
     if(d){
@@ -362,7 +362,7 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
       +stats
       +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
       +(d?' · 更新于 '+new Date((d.updated_at||d.updatedAt)*1000).toLocaleTimeString():'')+'</div></div>'
-      +(canCancel?'<button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button><button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
+      +(canEdit?'<button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button><button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
       +'</div>';
   }).join('');
 }

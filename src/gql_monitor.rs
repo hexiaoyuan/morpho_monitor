@@ -106,6 +106,7 @@ pub struct GqlMonitor {
     pub gql_url: String,
     pub polling_interval_secs: u64,
     http: reqwest::Client,
+    last_admin_alert: std::sync::Mutex<i64>,
 }
 
 impl GqlMonitor {
@@ -114,6 +115,7 @@ impl GqlMonitor {
             gql_url: gql_url.to_string(),
             polling_interval_secs,
             http: reqwest::Client::new(),
+            last_admin_alert: std::sync::Mutex::new(0),
         }
     }
 
@@ -159,10 +161,17 @@ impl GqlMonitor {
                         let mi = match self.query_market(&order.chain, &order.market_id).await {
                             Ok(m) => m,
                             Err(e) => {
-                                warn!("GQL market query failed for order {} (market={}): {}",
-                                    order.id, order.market_id, e);
-                                if e.to_string().contains("Market not found") {
+                                let msg = e.to_string();
+                                warn!("GQL market error for order {}: {} (market={})",
+                                    order.id, msg, order.market_id);
+                                if msg.contains("Market not found") {
                                     self.mark_invalid(order, state, alert_manager).await;
+                                } else {
+                                    // Network/transient errors: notify admin (debounced 5min)
+                                    self.maybe_alert_admin(state, alert_manager, &format!(
+                                        "⚠️ GQL查询异常\n市场: {}\n错误: {}",
+                                        order.market_id, msg
+                                    )).await;
                                 }
                                 continue;
                             }
@@ -175,8 +184,17 @@ impl GqlMonitor {
                         let vi = match self.query_vault(&order.chain, &order.market_id).await {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!("GQL vault query failed for order {} (vault={}): {}",
-                                    order.id, order.market_id, e);
+                                let msg = e.to_string();
+                                warn!("GQL vault error for order {}: {} (vault={})",
+                                    order.id, msg, order.market_id);
+                                if msg.contains("Vault not found") {
+                                    self.mark_invalid(order, state, alert_manager).await;
+                                } else {
+                                    self.maybe_alert_admin(state, alert_manager, &format!(
+                                        "⚠️ GQL查询异常\nVault: {}\n错误: {}",
+                                        order.market_id, msg
+                                    )).await;
+                                }
                                 continue;
                             }
                         };
@@ -211,6 +229,17 @@ impl GqlMonitor {
         Ok(())
     }
 
+    /// Notify admin with 5-minute debounce to avoid spamming.
+    async fn maybe_alert_admin(&self, state: &AppState, alert_manager: &AlertManager, content: &str) {
+        let now = Utc::now().timestamp();
+        let mut last = self.last_admin_alert.lock().unwrap();
+        if now - *last >= 300 {
+            *last = now;
+            alert_manager.notify_admin(state, content).await;
+        }
+    }
+
+    /// Mark an order as Ended because the market/vault genuinely doesn't exist.
     async fn mark_invalid(&self, order: &Order, state: &AppState, alert_manager: &AlertManager) {
         {
             let mut orders = state.orders.write().await;
@@ -232,7 +261,7 @@ impl GqlMonitor {
     async fn update_monitor_state(&self, state: &AppState, order: &Order, now: i64) {
         let key = AlertManager::state_key(&order.chain, &order.market_id, &order.user_address);
         let mut states = state.monitor_states.write().await;
-        states.entry(key).or_insert(MonitorState {
+        let entry = states.entry(key).or_insert(MonitorState {
             chain: order.chain.clone(),
             market_id: order.market_id.clone(),
             user_address: order.user_address.clone(),
@@ -241,6 +270,7 @@ impl GqlMonitor {
             health_factor: U256::ZERO,
             last_updated: now,
         });
+        entry.last_updated = now;
     }
 
     async fn transition_state(
@@ -314,6 +344,7 @@ impl GqlMonitor {
                         let msg = format!("✅ 预警已解除\n名称: {}\n链: {}\n类型: {}\n目标: {}",
                             order.name, order.chain, tlabel, order.market_id);
                         alert_manager.notify_user(state, &order.user_address, &msg).await;
+                        alert_manager.notify_admin(state, &format!("✅ 预警已解除 (用户: {})\n{}", &order.user_address, msg)).await;
                     }
                     _ => {}
                 }
@@ -426,14 +457,35 @@ impl GqlMonitor {
             .send()
             .await
             .map_err(|e| {
-                crate::error::AppError::RpcError(format!("GQL market query failed: {}", e))
+                crate::error::AppError::RpcError(format!("GQL HTTP request failed: {}", e))
             })?;
+        let status = resp_raw.status().as_u16();
         let resp_text = resp_raw.text().await.map_err(|e| {
-            crate::error::AppError::RpcError(format!("GQL market read failed: {}", e))
+            crate::error::AppError::RpcError(format!("GQL read body failed: {}", e))
         })?;
+        if status < 200 || status >= 300 {
+            return Err(crate::error::AppError::RpcError(format!(
+                "GQL HTTP {} body={:.200}", status, resp_text
+            )));
+        }
         let resp: GqlResponse<MarketData> = serde_json::from_str(&resp_text).map_err(|e| {
-            crate::error::AppError::RpcError(format!("GQL market parse: {} body={:.300}", e, resp_text))
+            crate::error::AppError::RpcError(format!("GQL JSON parse: {} body={:.300}", e, resp_text))
         })?;
+
+        // Check GQL errors first — only "NOT_FOUND" means the market genuinely doesn't exist
+        if let Some(ref errors) = resp.errors {
+            if !errors.is_empty() {
+                let is_not_found = errors.iter().any(|e| {
+                    e.get("status").and_then(|s| s.as_str()) == Some("NOT_FOUND")
+                });
+                if is_not_found {
+                    return Err(crate::error::AppError::RpcError("Market not found".into()));
+                }
+                // Other GQL errors: treat as transient, log the details
+                let msg = errors.iter().find_map(|e| e.get("message").and_then(|m| m.as_str())).unwrap_or("unknown");
+                return Err(crate::error::AppError::RpcError(format!("GQL error: {}", msg)));
+            }
+        }
 
         resp.data
             .and_then(|d| d.market_by_id)
@@ -457,14 +509,33 @@ impl GqlMonitor {
             .send()
             .await
             .map_err(|e| {
-                crate::error::AppError::RpcError(format!("GQL vault query failed: {}", e))
+                crate::error::AppError::RpcError(format!("GQL HTTP request failed: {}", e))
             })?;
+        let status = resp_raw.status().as_u16();
         let resp_text = resp_raw.text().await.map_err(|e| {
-            crate::error::AppError::RpcError(format!("GQL vault read failed: {}", e))
+            crate::error::AppError::RpcError(format!("GQL read body failed: {}", e))
         })?;
+        if status < 200 || status >= 300 {
+            return Err(crate::error::AppError::RpcError(format!(
+                "GQL HTTP {} body={:.200}", status, resp_text
+            )));
+        }
         let resp: GqlResponse<VaultData> = serde_json::from_str(&resp_text).map_err(|e| {
-            crate::error::AppError::RpcError(format!("GQL vault parse: {} body={:.300}", e, resp_text))
+            crate::error::AppError::RpcError(format!("GQL JSON parse: {} body={:.300}", e, resp_text))
         })?;
+
+        if let Some(ref errors) = resp.errors {
+            if !errors.is_empty() {
+                let is_not_found = errors.iter().any(|e| {
+                    e.get("status").and_then(|s| s.as_str()) == Some("NOT_FOUND")
+                });
+                if is_not_found {
+                    return Err(crate::error::AppError::RpcError("Vault not found".into()));
+                }
+                let msg = errors.iter().find_map(|e| e.get("message").and_then(|m| m.as_str())).unwrap_or("unknown");
+                return Err(crate::error::AppError::RpcError(format!("GQL error: {}", msg)));
+            }
+        }
 
         resp.data
             .and_then(|d| d.vault_v2_by_address)

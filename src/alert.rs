@@ -227,6 +227,13 @@ impl AlertManager {
         Ok(())
     }
 
+    /// Try to notify the admin. Reads admin AlertConfig, sends if configured.
+    pub async fn notify_admin(&self, state: &crate::models::AppState, content: &str) {
+        let admin = state.config.admin.address.to_lowercase();
+        if admin.is_empty() { return; }
+        self.notify_user(state, &admin, content).await;
+    }
+
     /// Try to send to a user by their address. Reads AlertConfig, sends if configured, logs otherwise.
     pub async fn notify_user(&self, state: &crate::models::AppState, user_address: &str, content: &str) {
         let cfg = {
