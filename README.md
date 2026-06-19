@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-58%20passed-green.svg)](.)
+[![Tests](https://img.shields.io/badge/tests-56%20passed-green.svg)](.)
 
 用户签署一次 EIP-712 授权，后端 24/7 监控多链 Morpho Blue 仓位健康度。触发清算阈值时，热钱包原子化执行清退并通过飞书秒级通知 — 解决冷/硬件钱包无法及时响应链上危机的痛点。
 
@@ -30,12 +30,12 @@
 ## ✨ 核心功能
 
 - **🔐 SIWE 登录** — 钱包签名即登录，JWT 无状态鉴权，Admin/User 二级权限
-- **📝 条件单** — 设置健康因子/LLTV 阈值，触发时自动执行清退
-- **✍️ EIP-712 授权** — 用户在前端签署 Morpho Blue `setAuthorizationWithSignature`，私钥不离开钱包
-- **⚡ 原子化执行** — Multicall3 单笔交易捆绑授权+提款，防止 MEV 夹击
-- **🔔 飞书告警** — 指数退避防抖 + 3 轮恢复确认，避免告警轰炸
-- **🌐 多链监控** — Ethereum / Base / Optimism / Arbitrum / Unichain / HyperEVM 独立 RPC 轮询 + GQL 零配置回退
-- **📊 自选看板** — 关注市场列表，浏览器 LocalStorage 持久化
+- **📝 条件单** — Market/Vault 多指标条件（上下限），预警+强平分离，状态机流转
+- **✍️ EIP-712 授权** — 强平触发时按需签署 Morpho Blue 授权，私钥不离开钱包
+- **⚡ 原子化执行** — Multicall3 捆绑授权+提款，模拟→确认发送，EIP-1559 gas + 0.01 gwei
+- **🔔 飞书告警** — 指数退避防抖 + 3 轮恢复确认，告警/恢复均通知用户+Admin
+- **🌐 12 链支持** — Ethereum / Base / OP / Arbitrum / Unichain / HyperEVM / Monad / Katana / Polygon / Stable / Tempo / World Chain
+- **📊 自选看板** — 关注市场列表，实时 GQL 数据，拖拽排序
 
 ## 🚀 快速开始
 
@@ -63,6 +63,10 @@ cp config.example.toml config.toml
 # 3. 构建 & 测试
 cargo build --release
 cargo test --lib
+
+# Linux x86_64 交叉编译 (macOS aarch64 → Linux)
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
 
 # 4. 启动
 export MORPHO_HOT_WALLET_KEY="0x..."     # 热钱包私钥
@@ -112,7 +116,7 @@ cargo test --lib
 ```
 
 ```
-test result: ok. 58 passed; 0 failed; 0 ignored
+test result: ok. 56 passed; 0 failed; 0 ignored
 ```
 
 ## 🛠️ 技术栈
@@ -128,8 +132,9 @@ test result: ok. 58 passed; 0 failed; 0 ignored
 | JWT | jsonwebtoken 9 |
 | 前端 | HTML5 + TailwindCSS + Viem + Vanilla JS |
 | 通知 | 飞书开放平台 API |
-| 数据源 | Morpho GraphQL API (零配置回退) |
+| 数据源 | Morpho GraphQL API (12s 轮询) |
 | 数据存储 | 本地 JSON |
+| TLS | rustls (支持 musl 静态编译) |
 
 ## 📖 文档
 

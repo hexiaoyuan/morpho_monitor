@@ -46,7 +46,7 @@ Request flow:
 | `auth.rs` | JWT create/verify, `AuthUser` extractor (`FromRequestParts`), SIWE verification |
 | `alert.rs` | `AlertState` debounce state machine, `AlertManager` (per-user feishu, token cache) |
 | `monitor.rs` | `ChainMonitor` — per-chain RPC polling, nonce invalidation (condition eval delegated to GQL) |
-| `gql_monitor.rs` | `GqlMonitor` — zero-config Morpho GraphQL polling (~12s), multi-condition evaluation, vault query, state machine |
+| `gql_monitor.rs` | `GqlMonitor` — 12s GQL polling, multi-condition evaluation (decimals-aware), vault query, state machine, admin alerts with recovery |
 | `executor.rs` | `BotExecutor` — atomic Multicall3 tx, retry loop with simulation, EIP-1559 gas + 0.01 gwei padding |
 | `api/mod.rs` | Router tree: `/api/auth`, `/api/orders`, `/api/alerts`, `/api/admin`, `/api/health` |
 | `api/auth.rs` | `GET /nonce`, `POST /login` |
@@ -141,6 +141,12 @@ Decision matrix:
 | Arbitrum | `0x6c247b1F6182318877311737BaC0844bAa518F5e` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
 | Unichain | `0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
 | HyperEVM | `0x68e37dE8d93d3496ae143F2E900490f6280C57cD` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| Monad | `0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| Katana | `0xD50F2DffFd62f94Ee4AEd9ca05C61d0753268aBc` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| Polygon | `0x1bF0c2541F820E775182832f06c0B7Fc27A25f67` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| Stable | `0xa40103088A899514E3fe474cD3cc5bf811b1102e` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| Tempo | `0x10EE9AAC980A180dd4DcFc96C746d60B0EA88f97` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| World Chain | `0xE741BC7c34758b4caE05062794E8Ae24978AF432` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
 
 Source: `monitor.rs:morpho_address()` and `executor.rs:BotExecutor::MULTICALL3`.
 
@@ -167,5 +173,6 @@ Source: `monitor.rs:morpho_address()` and `executor.rs:BotExecutor::MULTICALL3`.
 2. `config.rs` — add env var override in `AppConfig::load()` (`env_override!` macro)
 3. `monitor.rs` — add entry to `morpho_address()` match
 4. `monitor.rs` — add `("newchain", state.config.chains.newchain.as_ref())` to `start_monitors()` vec
-5. `static/index.html` — add to `CHAIN_IDS` and `MORPHO_ADDRS` objects
-6. Update docs: `config.example.toml`, `.env.example`, `prompt.md` Appendix B
+5. `gql_monitor.rs` — add entry to `chain_id()`
+6. `static/index.html` — add to `CHAIN_IDS`, `MORPHO_ADDRS`, `KNOWN_CHAINS`, dropdowns
+7. Update docs: `config.example.toml`, `.env.example`

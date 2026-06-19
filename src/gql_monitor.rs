@@ -676,20 +676,24 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
 // ---------------------------------------------------------------------------
 
 /// Evaluate a U256 metric condition, return triggered reasons.
-fn evaluate_u256_condition(name: &str, condition: &MetricCondition, current: U256) -> Vec<String> {
+/// `decimals` scales the user's threshold to match raw token units.
+fn evaluate_u256_condition(name: &str, condition: &MetricCondition, current: U256, decimals: u32) -> Vec<String> {
     let mut reasons = Vec::new();
     if !condition.is_active() { return reasons; }
+    let scale = U256::from(10u64.pow(decimals));
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = U256::from_str(upper) {
-            if current > limit {
-                reasons.push(format!("{} 当前值 {} > 上限 {}", name, current, limit));
+            let scaled = limit.checked_mul(scale).unwrap_or(limit);
+            if current > scaled {
+                reasons.push(format!("{} 当前值 {} > 上限 {}", name, current, scaled));
             }
         }
     }
     if let Some(ref lower) = condition.lower {
         if let Ok(limit) = U256::from_str(lower) {
-            if current < limit {
-                reasons.push(format!("{} 当前值 {} < 下限 {}", name, current, limit));
+            let scaled = limit.checked_mul(scale).unwrap_or(limit);
+            if current < scaled {
+                reasons.push(format!("{} 当前值 {} < 下限 {}", name, current, scaled));
             }
         }
     }
@@ -723,14 +727,15 @@ fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> Vec
         Some(s) => s,
         None => return Vec::new(),
     };
+    let decimals = market.loan_asset.as_ref().and_then(|a| a.decimals).unwrap_or(18);
     let total_assets = state.supply_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
     let total_borrow = state.borrow_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
     let liquidity = total_assets.checked_sub(total_borrow).unwrap_or(U256::ZERO);
     let apy = state.supply_apy.unwrap_or(0.0);
 
     let mut reasons = Vec::new();
-    reasons.extend(evaluate_u256_condition("Total Market", &cond.total_market, total_assets));
-    reasons.extend(evaluate_u256_condition("Liquidity", &cond.liquidity, liquidity));
+    reasons.extend(evaluate_u256_condition("Total Market", &cond.total_market, total_assets, decimals));
+    reasons.extend(evaluate_u256_condition("Liquidity", &cond.liquidity, liquidity, decimals));
     reasons.extend(evaluate_f64_condition("Supply APY", &cond.supply_apy, apy));
     reasons
 }
@@ -761,11 +766,11 @@ mod tests {
     #[test]
     fn test_evaluate_u256_condition() {
         let c = MetricCondition { enabled: true, upper: Some("100".into()), lower: Some("10".into()) };
-        assert!(!evaluate_u256_condition("test", &c, U256::from(200)).is_empty());
-        assert!(!evaluate_u256_condition("test", &c, U256::from(5)).is_empty());
-        assert!(evaluate_u256_condition("test", &c, U256::from(50)).is_empty());
+        assert!(!evaluate_u256_condition("test", &c, U256::from(200), 0).is_empty());
+        assert!(!evaluate_u256_condition("test", &c, U256::from(5), 0).is_empty());
+        assert!(evaluate_u256_condition("test", &c, U256::from(50), 0).is_empty());
         let c = MetricCondition { enabled: false, upper: Some("100".into()), lower: None };
-        assert!(evaluate_u256_condition("test", &c, U256::from(200)).is_empty());
+        assert!(evaluate_u256_condition("test", &c, U256::from(200), 0).is_empty());
     }
 
     #[test]
