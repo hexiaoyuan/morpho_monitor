@@ -107,6 +107,7 @@ pub struct GqlMonitor {
     pub polling_interval_secs: u64,
     http: reqwest::Client,
     last_admin_alert: std::sync::Mutex<i64>,
+    gql_alert_active: std::sync::Mutex<bool>,
 }
 
 impl GqlMonitor {
@@ -116,6 +117,7 @@ impl GqlMonitor {
             polling_interval_secs,
             http: reqwest::Client::new(),
             last_admin_alert: std::sync::Mutex::new(0),
+            gql_alert_active: std::sync::Mutex::new(false),
         }
     }
 
@@ -150,9 +152,11 @@ impl GqlMonitor {
         };
 
         if active_orders.is_empty() {
+            self.maybe_recover_gql_alert(alert_manager, state).await;
             return Ok(());
         }
 
+        let mut had_transient_error = false;
         for order in &active_orders {
             // Evaluate based on order type
             let (alert_reasons, market_info_opt, vault_info_opt) =
@@ -167,6 +171,7 @@ impl GqlMonitor {
                                 if msg.contains("Market not found") {
                                     self.mark_invalid(order, state, alert_manager).await;
                                 } else {
+                                    had_transient_error = true;
                                     // Network/transient errors: notify admin (debounced 5min)
                                     self.maybe_alert_admin(state, alert_manager, &format!(
                                         "⚠️ GQL查询异常\n市场: {}\n错误: {}",
@@ -190,6 +195,7 @@ impl GqlMonitor {
                                 if msg.contains("Vault not found") {
                                     self.mark_invalid(order, state, alert_manager).await;
                                 } else {
+                                    had_transient_error = true;
                                     self.maybe_alert_admin(state, alert_manager, &format!(
                                         "⚠️ GQL查询异常\nVault: {}\n错误: {}",
                                         order.market_id, msg
@@ -226,7 +232,27 @@ impl GqlMonitor {
                 .await;
         }
 
+        if !had_transient_error {
+            self.maybe_recover_gql_alert(alert_manager, state).await;
+        }
         Ok(())
+    }
+
+    /// If GQL alert was active and queries now succeed, send recovery.
+    async fn maybe_recover_gql_alert(&self, alert_manager: &AlertManager, state: &AppState) {
+        let was_active = {
+            let mut active = self.gql_alert_active.lock().unwrap();
+            if *active {
+                *active = false;
+                true
+            } else {
+                false
+            }
+        };
+        if was_active {
+            info!("GQL queries recovered, sending admin notification");
+            alert_manager.notify_admin(state, "✅ GQL查询已恢复正常").await;
+        }
     }
 
     /// Notify admin with 5-minute debounce to avoid spamming.
@@ -242,6 +268,7 @@ impl GqlMonitor {
             }
         }; // drop guard before .await
         if should_alert {
+            *self.gql_alert_active.lock().unwrap() = true;
             alert_manager.notify_admin(state, content).await;
         }
     }
