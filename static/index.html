@@ -326,7 +326,7 @@ qsa('#tab-nav button').forEach(btn=>{btn.addEventListener('click',()=>{
 })});
 
 // ====== Orders ======
-async function refreshOrdersData(orders){if(!orders||!orders.length)return;const ids=[...new Set(orders.map(o=>o.market_id))].join(',');try{const data=await api('GET','/orders/market-data?ids='+ids);if(data)Object.entries(data).forEach(([k,v])=>{WATCH_DATA_CACHE[k]=v})}catch(e){console.warn('market-data:',e)}}
+async function refreshOrdersData(orders){if(!orders||!orders.length)return;const ids=[...new Set(orders.map(o=>o.market_id))].join(',');try{const data=await api('GET','/cache?ids='+ids);if(data)Object.entries(data).forEach(([k,v])=>{WATCH_DATA_CACHE[k]=v})}catch(e){console.warn('market-data:',e)}}
 async function loadOrders(){if(!jwtToken)return;try{const o=await api('GET','/orders');await refreshOrdersData(o||[]);renderOrders(o||[])}catch(e){$('orders-list').innerHTML='<p class="tx-red tx-sm tx-center" style="padding:32px 0">加载失败: '+e.message+'</p>'}}
 function renderOrders(orders){
   if(!orders.length){$('orders-list').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0">暂无条件单</p>';return}
@@ -366,7 +366,7 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
       +'</div>';
   }).join('');
 }
-async function refreshOrderData(mid){const o=await api('GET','/orders');try{const data=await api('GET','/orders/market-data?ids='+mid);if(data&&data[mid])WATCH_DATA_CACHE[mid]=data[mid];renderOrders(o||[])}catch(e){}}
+async function refreshOrderData(mid){const o=await api('GET','/orders');try{const data=await api('GET','/cache?ids='+mid);if(data&&data[mid])WATCH_DATA_CACHE[mid]=data[mid];renderOrders(o||[])}catch(e){}}
 async function refreshAllOrders(){await loadOrders()}
 function setOrderRefreshInterval(){
   const secs=parseInt($('order-refresh-interval').value);localStorage.setItem('morpho_order_refresh_secs',secs);

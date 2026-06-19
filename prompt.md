@@ -269,7 +269,7 @@ bytes32 constant AUTHORIZATION_TYPEHASH = keccak256(
 |---|---|---|
 | `/api/auth/*` | 公开 | 获取 Nonce、SIWE 登录验证 |
 | `/api/orders` | User / Admin | 条件单 CRUD + 市场数据缓存，持久化至 `orders.json` |
-| `/api/orders/market-data` | User / Admin | 获取后端 GQL 缓存的 Market/Vault 数据 |
+| `/api/cache` | User / Admin | 获取后端 GQL 缓存的 Market/Vault 数据 |
 | `/api/alerts` | User / Admin | 飞书通知配置，持久化至 `alerts.json` |
 | `/api/admin/whitelist` | Admin | 白名单增删查改（`address` + `nickname`），持久化至 `whitelist.json` |
 | `/api/health` | 公开 | 健康检查 |
