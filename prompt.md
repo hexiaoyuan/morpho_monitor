@@ -53,7 +53,7 @@
 
 * **后端 (Rust)**：Tokio 异步架构，Alloy-rs 链上交互与事件监听，Axum 提供 HTTP API。
 * **安全验证**：`siwe`（Sign-In with Ethereum 标准），`jsonwebtoken`（JWT 状态保持）。
-* **前端 (Single HTML)**：原生 HTML5 + TailwindCSS + Vanilla JS + Viem，LocalStorage 存储自选列表与服务器地址，支持 GitHub Pages 托管。
+* **前端 (Single HTML)**：原生 HTML5 + 全内联 Custom CSS + Vanilla JS + Viem (importmap)，LocalStorage 存储自选与配置，支持 GitHub Pages 托管。
 * **数据存储**：服务器本地轻量化 JSON 文件存储（`orders.json`、`whitelist.json`、`alerts.json`），通过 `Arc<RwLock<…>>` 控制并发读写。
 * **支持的链**：
 

@@ -16,7 +16,7 @@
 前端 (GitHub Pages)          Rust 后端 (自部署)           区块链
 ┌──────────────────┐       ┌─────────────────────┐    ┌──────────┐
 │  index.html      │─JWT──▶│  Axum HTTP API       │    │ Ethereum │
-│  TailwindCSS     │       │  /api/auth/*         │    │ Base     │
+│  Custom CSS      │       │  /api/auth/*         │    │ Base     │
 │  Viem (EIP-712)  │       │  /api/orders         │◀───│ Optimism │
 │  LocalStorage    │       │  /api/admin/*        │    │ Arbitrum │
 └──────────────────┘       │                      │    │ Unichain │
@@ -130,7 +130,7 @@ test result: ok. 56 passed; 0 failed; 0 ignored
 | EIP-712 | alloy-sol-types + Viem (前端) |
 | SIWE | siwe-rs 0.6 |
 | JWT | jsonwebtoken 9 |
-| 前端 | HTML5 + TailwindCSS + Viem + Vanilla JS |
+| 前端 | HTML5 + Custom CSS + Viem + Vanilla JS |
 | 通知 | 飞书开放平台 API |
 | 数据源 | Morpho GraphQL API (12s 轮询) |
 | 数据存储 | 本地 JSON |
