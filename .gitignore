@@ -25,3 +25,8 @@ tmp/
 jwt_secret
 config.toml
 .env
+
+# Runtime data files (auto-created)
+data/orders.json
+data/alerts.json
+data/whitelist.json
