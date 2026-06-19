@@ -57,14 +57,20 @@
 * **数据存储**：服务器本地轻量化 JSON 文件存储（`orders.json`、`whitelist.json`、`alerts.json`），通过 `Arc<RwLock<…>>` 控制并发读写。
 * **支持的链**：
 
-| 链 | 说明 |
-|---|---|
-| **Ethereum** 主网 | Morpho Blue 主要部署链，优先级最高 |
-| **Base** | L2，低 Gas 成本 |
-| **Optimism** | OP Stack L2 |
-| **Arbitrum** | Arbitrum One L2 |
-| **Unichain** | Uniswap L2 |
-| **HyperEVM** | 高性能 EVM 兼容链 |
+| 链 | Chain ID | 说明 |
+|---|---|---|
+| **Ethereum** | 1 | Morpho Blue 主要部署链 |
+| **Base** | 8453 | L2 |
+| **Optimism** | 10 | OP Stack L2 |
+| **Arbitrum** | 42161 | Arbitrum One L2 |
+| **Unichain** | 130 | Uniswap L2 |
+| **HyperEVM** | 999 | 高性能 EVM 兼容链 |
+| **Monad** | 143 | 高性能 L1 |
+| **Katana** | 747474 | 游戏链 |
+| **Polygon** | 137 | Polygon PoS |
+| **Stable** | 988 | Stable 链 |
+| **Tempo** | 4217 | Tempo 链 |
+| **World Chain** | 480 | World Chain |
 
 > 前端通过 GitHub Pages 托管于 `hexiaoyuan.github.io/morpho_monitor`，与后端服务分离部署。页面内置服务器地址配置（默认 `http://localhost:16800`），用户可自定义并保存到浏览器 LocalStorage。
 
@@ -242,7 +248,7 @@ bytes32 constant AUTHORIZATION_TYPEHASH = keccak256(
 
 ### 🧱 M1: 状态监控引擎 (Monitor)
 
-* **多链监听**：通过 WebSocket (推荐) 或 HTTP Polling 同步监听 Ethereum、Base、Optimism、Arbitrum、Unichain、HyperEVM 上 Morpho Blue 合约的链上事件。另有 GQL 零配置回退（Morpho GraphQL API，~60s 延迟）始终在线。
+* **多链监听**：通过 WebSocket (推荐) 或 HTTP Polling 同步监听 12 条链的 Morpho Blue 合约链上事件。另有 GQL 零配置回退（Morpho GraphQL API，12s 轮询）始终在线。GQL 异常时通知 Admin，恢复后通知解除。
 * **内存状态机**：解析 Log 实时维护全量监控对象的 `(MarketParams, positionHealth, lltv, borrowShares, collateralAmount)` 元组，基于 Morpho 的 `lastUpdate` 和 `_accrueFee` 计算当前健康因子。
 * **废单清理**：实时捕捉 `NonceIncremented(id, authorizer, newNonce)` 和 `AuthorizationSet` 事件。若 Nonce 增加超出订单中的 nonce 值，说明签名已过期，自动清理该用户所有关联订单并触发通知。
 * **可配置性**：每链独立配置 RPC URL、Polling 间隔（默认 12s，即一个以太坊区块时间）、重试策略。
@@ -262,7 +268,8 @@ bytes32 constant AUTHORIZATION_TYPEHASH = keccak256(
 | 路由前缀 | 权限 | 说明 |
 |---|---|---|
 | `/api/auth/*` | 公开 | 获取 Nonce、SIWE 登录验证 |
-| `/api/orders` | User / Admin | 条件单 CRUD，持久化至 `orders.json` |
+| `/api/orders` | User / Admin | 条件单 CRUD + 市场数据缓存，持久化至 `orders.json` |
+| `/api/orders/market-data` | User / Admin | 获取后端 GQL 缓存的 Market/Vault 数据 |
 | `/api/alerts` | User / Admin | 飞书通知配置，持久化至 `alerts.json` |
 | `/api/admin/whitelist` | Admin | 白名单增删查改（`address` + `nickname`），持久化至 `whitelist.json` |
 | `/api/health` | 公开 | 健康检查 |
@@ -296,31 +303,41 @@ gas_min_balance = "0.1"              # ETH 最低余额阈值
 
 [chains.ethereum]
 rpc_http = "https://eth-mainnet.g.alchemy.com/v2/..."
-# rpc_ws = "wss://..."               # WebSocket（可选）
 polling_interval_secs = 12
 
 [chains.base]
 rpc_http = "https://base-mainnet.g.alchemy.com/v2/..."
 polling_interval_secs = 12
 
-# [chains.optimism]                   # 可选链
+# [chains.optimism]                   # 可选
 # rpc_http = "https://opt-mainnet.g.alchemy.com/v2/..."
-# polling_interval_secs = 12
 
-# [chains.arbitrum]                   # 可选链
+# [chains.arbitrum]                   # 可选
 # rpc_http = "https://arb-mainnet.g.alchemy.com/v2/..."
-# polling_interval_secs = 12
 
-# [chains.unichain]                   # 可选链
+# [chains.unichain]                   # 可选
 # rpc_http = "https://mainnet.unichain.org"
-# polling_interval_secs = 12
 
-# [chains.hyperevm]                   # 可选链
+# [chains.hyperevm]                   # 可选
 # rpc_http = "https://rpc.hyperevm.xyz"
-# polling_interval_secs = 6
 
-# [flashbots]                         # 私密广播（可选）
-# rpc_url = "https://rpc.flashbots.net"
+# [chains.monad]                      # 可选
+# rpc_http = "https://rpc.monad.xyz"
+
+# [chains.katana]                     # 可选
+# rpc_http = "https://rpc.katana.xyz"
+
+# [chains.polygon]                    # 可选
+# rpc_http = "https://polygon-rpc.com"
+
+# [chains.stable]                     # 可选
+# rpc_http = "https://rpc.stable.xyz"
+
+# [chains.tempo]                      # 可选
+# rpc_http = "https://rpc.tempo.xyz"
+
+# [chains.worldchain]                 # 可选
+# rpc_http = "https://worldchain-mainnet.g.alchemy.com/public"
 ```
 
 ### 7.2 环境变量覆盖（敏感信息优先使用环境变量）
@@ -339,10 +356,23 @@ polling_interval_secs = 12
 | `RPC_ARBITRUM_WS` / `RPC_ARBITRUM_HTTP` | Arbitrum RPC |
 | `RPC_UNICHAIN_WS` / `RPC_UNICHAIN_HTTP` | Unichain RPC |
 | `RPC_HYPEREVM_HTTP` | HyperEVM RPC |
+| `RPC_MONAD_HTTP` | Monad RPC |
+| `RPC_KATANA_HTTP` | Katana RPC |
+| `RPC_POLYGON_HTTP` | Polygon RPC |
+| `RPC_STABLE_HTTP` | Stable RPC |
+| `RPC_TEMPO_HTTP` | Tempo RPC |
+| `RPC_WORLDCHAIN_HTTP` | World Chain RPC |
 
 ---
 
 ## 8. 错误处理与容错策略
+
+### 8.1 GQL 错误分级处理
+
+* **NOT_FOUND**：GQL 返回 `errors[].status == "NOT_FOUND"` → 订单标记 Ended + 通知用户（市场/金库确实不存在）
+* **HTTP/网络错误**：429/5xx/连接超时 → 记录日志，通知 Admin（5 分钟 debounce），不操作订单，下一轮重试
+* **恢复通知**：GQL 异常恢复后自动发送消息给 Admin
+* **JSON 解析错误**：记录日志含响应内容，不操作订单
 
 ### 8.1 RPC 断连与重试
 
@@ -487,10 +517,10 @@ polling_interval_secs = 12
 
 ## 附录 B: 关键合约地址
 
-| 合约 | Ethereum | Base | Optimism | Arbitrum | Unichain | HyperEVM |
-|---|---|---|---|---|---|---|
-| Morpho Blue | `0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` | `0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` | `0xce95AfbB8EA029495c66020883F87aaE8864AF92` | `0x6c247b1F6182318877311737BaC0844bAa518F5e` | `0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A` | `0x68e37dE8d93d3496ae143F2E900490f6280C57cD` |
-| Multicall3 | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` |
+| 合约 | Ethereum | Base | Optimism | Arbitrum | Unichain | HyperEVM | Monad | Katana | Polygon | Stable | Tempo | World Chain |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Morpho Blue | `0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` | `0xBBBBBbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` | `0xce95AfbB8EA029495c66020883F87aaE8864AF92` | `0x6c247b1F6182318877311737BaC0844bAa518F5e` | `0x8f5ae9CddB9f68de460C77730b018Ae7E04a140A` | `0x68e37dE8d93d3496ae143F2E900490f6280C57cD` | `0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee` | `0xD50F2DffFd62f94Ee4AEd9ca05C61d0753268aBc` | `0x1bF0c2541F820E775182832f06c0B7Fc27A25f67` | `0xa40103088A899514E3fe474cD3cc5bf811b1102e` | `0x10EE9AAC980A180dd4DcFc96C746d60B0EA88f97` | `0xE741BC7c34758b4caE05062794E8Ae24978AF432` |
+| Multicall3 | `0xcA11bde33A8E2b1ad6bf053c61E3A8e7e2A9d1E9` (所有链相同) ||||||||||||
 
 ## 附录 C: 部署参考
 
