@@ -86,8 +86,7 @@ async fn test_notification(
     }
 
     let alert_manager = AlertManager::new();
-    let short = if cfg.user_address.len() >= 10 { &cfg.user_address[..10] } else { cfg.user_address.as_str() };
-    let content = format!("🧪 测试消息\n👤 {} [{}]\n内容: {}", cfg.nickname, short, text);
+    let content = format!("🧪 测试消息\n👤 {} [{}]\n内容: {}", cfg.nickname, cfg.user_address, text);
     alert_manager.send_to_user(&cfg, &content).await?;
 
     Ok(Json(ApiResponse::ok("测试消息已发送".into())))
