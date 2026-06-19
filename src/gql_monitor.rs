@@ -232,9 +232,16 @@ impl GqlMonitor {
     /// Notify admin with 5-minute debounce to avoid spamming.
     async fn maybe_alert_admin(&self, state: &AppState, alert_manager: &AlertManager, content: &str) {
         let now = Utc::now().timestamp();
-        let mut last = self.last_admin_alert.lock().unwrap();
-        if now - *last >= 300 {
-            *last = now;
+        let should_alert = {
+            let mut last = self.last_admin_alert.lock().unwrap();
+            if now - *last >= 300 {
+                *last = now;
+                true
+            } else {
+                false
+            }
+        }; // drop guard before .await
+        if should_alert {
             alert_manager.notify_admin(state, content).await;
         }
     }
@@ -244,9 +251,9 @@ impl GqlMonitor {
         {
             let mut orders = state.orders.write().await;
             if let Some(o) = orders.get_mut(&order.id) {
+                info!("Order {} status: {:?} → Ended (not found)", order.id, o.status);
                 o.status = OrderStatus::Ended;
                 o.updated_at = Utc::now().timestamp();
-                warn!("Marked order {} as Ended: market not found", order.id);
             }
         }
         let _ = crate::api::orders::persist_orders(state).await;
@@ -311,25 +318,27 @@ impl GqlMonitor {
             _ => None,
         };
 
-        if let Some(status) = new_status {
+        if let Some(new) = new_status {
+            let old = order.status.clone();
+            info!("Order {} status: {:?} → {:?}", order.id, old, new);
             let mut orders = state.orders.write().await;
             if let Some(o) = orders.get_mut(&order.id) {
-                o.status = status.clone();
+                o.status = new.clone();
                 o.updated_at = Utc::now().timestamp();
-                let status_copy = status;
                 drop(orders);
                 let _ = crate::api::orders::persist_orders(state).await;
 
                 let reasons_text = |reasons: &[String]| if reasons.is_empty() { String::new() } else { format!("\n触发条件:\n{}", reasons.iter().map(|r| format!("  • {}", r)).collect::<Vec<_>>().join("\n")) };
                 let tlabel = if order.order_type == "vault" { "Vault" } else { "Market" };
-                match status_copy {
-                    OrderStatus::Alerting => {
+                // Only notify on meaningful transitions (skip Editing→Monitoring)
+                match (&old, &new) {
+                    (_, OrderStatus::Alerting) => {
                         info!("ALERT triggered for order {} (chain={}, type={}, target={})", order.id, order.chain, order.order_type, order.market_id);
                         let msg = format!("🚨 预警已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}",
                             order.name, order.chain, tlabel, order.market_id, reasons_text(alert_reasons));
                         alert_manager.notify_user(state, &order.user_address, &msg).await;
                     }
-                    OrderStatus::Liquidating => {
+                    (_, OrderStatus::Liquidating) => {
                         info!("LIQUIDATION triggered for order {} (chain={}, type={}, target={})", order.id, order.chain, order.order_type, order.market_id);
                         let msg = format!("🔥 强平已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}{}",
                             order.name, order.chain, tlabel, order.market_id,
@@ -339,7 +348,7 @@ impl GqlMonitor {
                             self.spawn_liquidation_task(order.clone(), lc.clone(), state.clone()).await;
                         }
                     }
-                    OrderStatus::Monitoring => {
+                    (OrderStatus::Alerting, OrderStatus::Monitoring) => {
                         info!("Recovery confirmed for order {}", order.id);
                         let msg = format!("✅ 预警已解除\n名称: {}\n链: {}\n类型: {}\n目标: {}",
                             order.name, order.chain, tlabel, order.market_id);
@@ -407,6 +416,7 @@ impl GqlMonitor {
                     {
                         let mut orders = state.orders.write().await;
                         if let Some(o) = orders.get_mut(&order_id) {
+                            info!("Order {} status: {:?} → Ended (liquidation ok)", order_id, o.status);
                             o.status = OrderStatus::Ended;
                             o.updated_at = Utc::now().timestamp();
                         }
@@ -425,6 +435,7 @@ impl GqlMonitor {
                     {
                         let mut orders = state.orders.write().await;
                         if let Some(o) = orders.get_mut(&order_id) {
+                            info!("Order {} status: {:?} → Ended (liquidation failed)", order_id, o.status);
                             o.status = OrderStatus::Ended;
                             o.updated_at = Utc::now().timestamp();
                         }

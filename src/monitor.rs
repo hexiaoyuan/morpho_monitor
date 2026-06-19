@@ -164,6 +164,7 @@ impl ChainMonitor {
                     {
                         let mut orders = state.orders.write().await;
                         if let Some(o) = orders.get_mut(&order.id) {
+                            info!("Order {} status: {:?} → Ended (nonce incremented)", order.id, o.status);
                             o.status = OrderStatus::Ended;
                             o.updated_at = Utc::now().timestamp();
                         }

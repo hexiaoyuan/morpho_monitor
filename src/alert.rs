@@ -236,6 +236,8 @@ impl AlertManager {
 
     /// Try to send to a user by their address. Reads AlertConfig, sends if configured, logs otherwise.
     pub async fn notify_user(&self, state: &crate::models::AppState, user_address: &str, content: &str) {
+        let first_line = content.lines().next().unwrap_or("");
+        tracing::info!("Feishu notify user={} msg=\"{}\"", user_address, first_line);
         let cfg = {
             let configs = state.alert_configs.read().await;
             configs.get(user_address).cloned()
@@ -246,11 +248,12 @@ impl AlertManager {
                 let full = format!("{}\n👤 {}\n{}", content, label, Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 if let Err(e) = self.send_to_user(&c, &full).await {
                     tracing::warn!("Feishu send failed for {}: {}", label, e);
+                } else {
+                    tracing::info!("Feishu sent to {} ({})", c.nickname, user_address);
                 }
             }
             _ => {
-                let short: &str = if user_address.len() >= 10 { &user_address[..10] } else { user_address };
-                tracing::info!("No feishu config for {} — skipped notification", short);
+                tracing::info!("No feishu config for {} — skipped notification", &user_address);
             }
         }
     }

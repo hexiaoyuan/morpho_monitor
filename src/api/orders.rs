@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -225,7 +226,8 @@ async fn update_order(
     }
 
     // Reset to Editing after user changes — GQL monitor picks up next poll
-    if order.status == OrderStatus::Alerting || order.status == OrderStatus::Monitoring {
+    if order.status != OrderStatus::Liquidating {
+        info!("Order {} status: {:?} → Editing (updated)", id, order.status);
         order.status = OrderStatus::Editing;
     }
     order.updated_at = now;
@@ -251,6 +253,7 @@ async fn delete_order(
         return Err(AppError::Forbidden("Not your order".into()));
     }
 
+    info!("Order {} status: {:?} → Ended (deleted)", id, order.status);
     order.status = OrderStatus::Ended;
     order.updated_at = Utc::now().timestamp();
     let ended = order.clone();
