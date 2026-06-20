@@ -538,7 +538,7 @@ async function fetchWatchData(items){
   const aliases=items.map((m,i)=>{
     const cid=CHAIN_IDS[m.chain]||1;
     if(m.type==='vault'){
-      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { totalAssetsUsd liquidityUsd netApy }';
+      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { totalAssetsUsd liquidityUsd forceDeallocatableLiquidityUsd netApy }';
     }
     return'm'+i+': marketById(chainId: '+cid+', marketId: "'+m.id+'") { loanAsset { decimals } state { supplyAssets borrowAssets supplyApy } }';
   }).join('\n');
@@ -550,7 +550,7 @@ async function fetchWatchData(items){
       if(m.type==='vault'){
         WATCH_GQL_CACHE[m.id]={
           totalAssetsUsd:item.totalAssetsUsd||0,
-          liquidityUsd:item.liquidityUsd||0,
+          liquidityUsd:(item.liquidityUsd||0)+(item.forceDeallocatableLiquidityUsd||0),
           apy:item.netApy,decimals:0,updatedAt:now,
         };
       }else if(item?.state){

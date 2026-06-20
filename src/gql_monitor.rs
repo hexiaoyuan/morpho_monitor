@@ -95,6 +95,7 @@ struct VaultData {
 struct VaultInfo {
     total_assets_usd: Option<f64>,
     liquidity_usd: Option<f64>,
+    force_deallocatable_liquidity_usd: Option<f64>,
     net_apy: Option<f64>,
 }
 
@@ -192,7 +193,7 @@ impl GqlMonitor {
                 format!("marketById(chainId: {cid}, marketId: \"{mid}\") {{ id loanAsset {{ decimals }} state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }}",
                     cid = cid, mid = order.market_id)
             } else {
-                format!("vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd netApy }}",
+                format!("vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd forceDeallocatableLiquidityUsd netApy }}",
                     vid = order.market_id, cid = cid)
             };
             batch_items.push(BatchItem {
@@ -900,7 +901,7 @@ impl GqlMonitor {
     async fn query_vault(&self, chain: &str, vault_id: &str) -> AppResult<VaultInfo> {
         let cid = chain_id(chain);
         let gql = format!(
-            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd netApy }} }}",
+            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd forceDeallocatableLiquidityUsd netApy }} }}",
             vid = vault_id, cid = cid
         );
         let query = serde_json::json!({"query": gql}).to_string();
@@ -1082,7 +1083,7 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
         vault_id.to_string(),
         CachedData::Vault {
             deposits: format!("{:.2}", vi.total_assets_usd.unwrap_or(0.0)),
-            liquidity: format!("{:.2}", vi.liquidity_usd.unwrap_or(0.0)),
+            liquidity: format!("{:.2}", vi.liquidity_usd.unwrap_or(0.0) + vi.force_deallocatable_liquidity_usd.unwrap_or(0.0)),
             apy: format!("{:.4}", vi.net_apy.unwrap_or(0.0)),
             updated_at: Utc::now().timestamp(),
         },
@@ -1192,7 +1193,7 @@ fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> Vec
 /// Evaluate vault conditions, return triggered metric details.
 fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> Vec<String> {
     let total = vault.total_assets_usd.unwrap_or(0.0);
-    let liq = vault.liquidity_usd.unwrap_or(0.0);
+    let liq = vault.liquidity_usd.unwrap_or(0.0) + vault.force_deallocatable_liquidity_usd.unwrap_or(0.0);
     let apy = vault.net_apy.unwrap_or(0.0);
 
     let mut reasons = Vec::new();
