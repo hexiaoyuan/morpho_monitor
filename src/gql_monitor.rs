@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -27,7 +28,7 @@ struct MarketData {
     market_by_id: Option<MarketInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketInfo {
     #[allow(dead_code)]
@@ -36,13 +37,13 @@ struct MarketInfo {
     state: Option<MarketState>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoanAsset {
     decimals: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketState {
     #[serde(default, deserialize_with = "deser_uint_string")]
@@ -86,7 +87,7 @@ struct VaultData {
     vault_v2_by_address: Option<VaultInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultInfo {
     total_assets_usd: Option<f64>,
@@ -105,16 +106,28 @@ struct VaultInfo {
 pub struct GqlMonitor {
     pub gql_url: String,
     pub polling_interval_secs: u64,
+    pub batch_size: usize,
     http: reqwest::Client,
     last_admin_alert: std::sync::Mutex<i64>,
     gql_alert_active: std::sync::Mutex<bool>,
 }
 
+/// Info for one aliased sub-query in a batch GQL request.
+struct BatchItem {
+    alias: String,
+    gql_fragment: String,
+    order_index: usize,   // index into the active_orders vec
+    is_market: bool,
+    chain: String,
+    market_id: String,
+}
+
 impl GqlMonitor {
-    pub fn new(gql_url: &str, polling_interval_secs: u64) -> Self {
+    pub fn new(gql_url: &str, polling_interval_secs: u64, batch_size: usize) -> Self {
         Self {
             gql_url: gql_url.to_string(),
             polling_interval_secs,
+            batch_size,
             http: reqwest::Client::new(),
             last_admin_alert: std::sync::Mutex::new(0),
             gql_alert_active: std::sync::Mutex::new(false),
@@ -156,86 +169,234 @@ impl GqlMonitor {
             return Ok(());
         }
 
+        // Build deduplicated query items — same (chain, market_id, type) only queried once
+        let mut seen = std::collections::HashSet::new();
+        let mut batch_items: Vec<BatchItem> = Vec::new();
+        let mut order_data: Vec<(Option<MarketInfo>, Option<VaultInfo>)> = vec![(None, None); active_orders.len()];
+
+        for (idx, order) in active_orders.iter().enumerate() {
+            let is_market = order.order_type == "market";
+            let dedup_key = format!("{}:{}:{}", order.chain, order.market_id, order.order_type);
+            if !seen.insert(dedup_key) {
+                continue; // dedup: this (chain, id, type) already queued
+            }
+            let cid = chain_id(&order.chain);
+            let fragment = if is_market {
+                format!("marketById(chainId: {cid}, marketId: \"{mid}\") {{ id loanAsset {{ decimals }} state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }}",
+                    cid = cid, mid = order.market_id)
+            } else {
+                format!("vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd idleAssetsUsd forceDeallocatableLiquidityUsd avgNetApy }}",
+                    vid = order.market_id, cid = cid)
+            };
+            batch_items.push(BatchItem {
+                alias: format!("q{}", batch_items.len()),
+                gql_fragment: fragment,
+                order_index: idx,
+                is_market,
+                chain: order.chain.clone(),
+                market_id: order.market_id.clone(),
+            });
+        }
+
+        info!("GQL batch: {} active orders → {} unique queries (batch_size={})",
+            active_orders.len(), batch_items.len(), self.batch_size);
+
         let mut had_transient_error = false;
-        for order in &active_orders {
-            // Evaluate based on order type
-            let (alert_reasons, market_info_opt, vault_info_opt) =
-                match order.order_type.as_str() {
-                    "market" => {
-                        let mi = match self.query_market(&order.chain, &order.market_id).await {
-                            Ok(m) => m,
-                            Err(e) => {
-                                let msg = e.to_string();
-                                warn!("GQL market error for order {}: {} (market={})",
-                                    order.id, msg, order.market_id);
-                                if msg.contains("Market not found") {
-                                    self.mark_invalid(order, state, alert_manager).await;
+
+        // Process in batches
+        for chunk in batch_items.chunks(self.batch_size) {
+            let (batch_result, batch_err) = self.execute_batch(chunk).await;
+            let mut batch_had_error = false;
+
+            for item in chunk {
+                let (mi_opt, vi_opt, err_msg) = if let Some(data) = batch_result.get(&item.alias) {
+                    if item.is_market {
+                        match serde_json::from_value::<MarketInfo>(data.clone()) {
+                            Ok(mi) => {
+                                if !mi.id.is_empty() || mi.state.is_some() {
+                                    cache_market_data(state, &item.market_id, &mi).await;
+                                    (Some(mi), None, None)
                                 } else {
-                                    had_transient_error = true;
-                                    // Network/transient errors: notify admin (debounced 5min)
-                                    self.maybe_alert_admin(state, alert_manager, &format!(
-                                        "⚠️ GQL查询异常\n市场: {}\n错误: {}",
-                                        order.market_id, msg
-                                    )).await;
+                                    (None, None, Some("Market not found".into()))
                                 }
-                                continue;
                             }
-                        };
-                        let reasons = evaluate_market_conditions(&order.alert_conditions, &mi);
-                        cache_market_data(state, &order.market_id, &mi).await;
-                        (reasons, Some(mi), None)
-                    }
-                    "vault" => {
-                        let vi = match self.query_vault(&order.chain, &order.market_id).await {
-                            Ok(v) => v,
                             Err(e) => {
-                                let msg = e.to_string();
-                                warn!("GQL vault error for order {}: {} (vault={})",
-                                    order.id, msg, order.market_id);
-                                if msg.contains("Vault not found") {
-                                    self.mark_invalid(order, state, alert_manager).await;
-                                } else {
-                                    had_transient_error = true;
-                                    self.maybe_alert_admin(state, alert_manager, &format!(
-                                        "⚠️ GQL查询异常\nVault: {}\n错误: {}",
-                                        order.market_id, msg
-                                    )).await;
-                                }
-                                continue;
+                                warn!("GQL batch parse market {}: {} data={}", item.market_id, e, data);
+                                batch_had_error = true;
+                                (None, None, Some(format!("parse error: {}", e)))
                             }
-                        };
-                        let reasons = evaluate_vault_conditions(&order.alert_conditions, &vi);
-                        cache_vault_data(state, &order.market_id, &vi).await;
-                        (reasons, None, Some(vi))
+                        }
+                    } else {
+                        match serde_json::from_value::<VaultInfo>(data.clone()) {
+                            Ok(vi) => {
+                                if vi.total_assets_usd.is_some() {
+                                    cache_vault_data(state, &item.market_id, &vi).await;
+                                    (None, Some(vi), None)
+                                } else {
+                                    (None, None, Some("Vault not found".into()))
+                                }
+                            }
+                            Err(e) => {
+                                warn!("GQL batch parse vault {}: {} data={}", item.market_id, e, data);
+                                batch_had_error = true;
+                                (None, None, Some(format!("parse error: {}", e)))
+                            }
+                        }
                     }
-                    _ => continue,
+                } else {
+                    // Alias missing from response entirely — transient error
+                    batch_had_error = true;
+                    (None, None, Some(batch_err.clone().unwrap_or_else(|| "missing alias in GQL response".into())))
                 };
+
+                // Store the results for all orders that share this (chain, market_id, type)
+                for (oi, order) in active_orders.iter().enumerate() {
+                    if order.chain == item.chain && order.market_id == item.market_id && order.order_type == (if item.is_market { "market" } else { "vault" }) {
+                        if let Some(ref mi) = mi_opt { order_data[oi].0 = Some(mi.clone()); }
+                        if let Some(ref vi) = vi_opt { order_data[oi].1 = Some(vi.clone()); }
+                    }
+                }
+
+                // Handle errors for ALL orders affected by this query failure
+                if let Some(ref err_msg) = err_msg {
+                    for (_oi, order) in active_orders.iter().enumerate() {
+                        if order.chain == item.chain && order.market_id == item.market_id && order.order_type == (if item.is_market { "market" } else { "vault" }) {
+                            warn!("GQL error for order {} ({}): {}", order.id, order.market_id, err_msg);
+                            if err_msg.contains("not found") {
+                                self.mark_invalid(order, state, alert_manager).await;
+                            } else {
+                                had_transient_error = true;
+                                self.maybe_alert_admin(state, alert_manager, &format!(
+                                    "⚠️ GQL查询异常\n链: {}\n目标: {}\n类型: {}\n错误: {}",
+                                    order.chain, order.market_id, order.order_type, err_msg
+                                )).await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if batch_had_error {
+                had_transient_error = true;
+            }
+        }
+
+        // Now evaluate conditions and transition state for each order
+        for (idx, order) in active_orders.iter().enumerate() {
+            // Skip orders that were already marked invalid/ended
+            {
+                let orders = state.orders.read().await;
+                if let Some(o) = orders.get(&order.id) {
+                    if o.status == OrderStatus::Ended {
+                        continue;
+                    }
+                }
+            }
+
+            let (mi_opt, vi_opt) = (&order_data[idx].0, &order_data[idx].1);
+
+            let alert_reasons = match order.order_type.as_str() {
+                "market" => mi_opt.as_ref().map_or(Vec::new(), |mi| evaluate_market_conditions(&order.alert_conditions, mi)),
+                "vault" => vi_opt.as_ref().map_or(Vec::new(), |vi| evaluate_vault_conditions(&order.alert_conditions, vi)),
+                _ => continue,
+            };
             let alert_triggered = !alert_reasons.is_empty();
 
-            // Evaluate liquidation conditions if configured
-            let liq_reasons: Vec<String> = order
-                .liquidation
-                .as_ref()
-                .map(|lc| match order.order_type.as_str() {
-                    "market" => market_info_opt.as_ref().map_or(Vec::new(), |mi| evaluate_market_conditions(&lc.conditions, mi)),
-                    "vault" => vault_info_opt.as_ref().map_or(Vec::new(), |vi| evaluate_vault_conditions(&lc.conditions, vi)),
+            let liq_reasons = order.liquidation.as_ref().map(|lc| {
+                match order.order_type.as_str() {
+                    "market" => mi_opt.as_ref().map_or(Vec::new(), |mi| evaluate_market_conditions(&lc.conditions, mi)),
+                    "vault" => vi_opt.as_ref().map_or(Vec::new(), |vi| evaluate_vault_conditions(&lc.conditions, vi)),
                     _ => Vec::new(),
-                })
-                .unwrap_or_default();
+                }
+            }).unwrap_or_default();
             let liquidation_triggered = !liq_reasons.is_empty();
 
-            // Update monitor state
             self.update_monitor_state(state, order, now).await;
-
-            // State machine transition
-            self.transition_state(order, alert_triggered, &alert_reasons, liquidation_triggered, &liq_reasons, state, alert_manager)
-                .await;
+            self.transition_state(order, alert_triggered, &alert_reasons, liquidation_triggered, &liq_reasons, state, alert_manager).await;
         }
 
         if !had_transient_error {
             self.maybe_recover_gql_alert(alert_manager, state).await;
         }
         Ok(())
+    }
+
+    /// Execute one batch of GQL sub-queries and return parsed JSON data per alias.
+    /// Returns (alias → serde_json::Value, optional overall error message).
+    async fn execute_batch(&self, items: &[BatchItem]) -> (HashMap<String, serde_json::Value>, Option<String>) {
+        let mut result = HashMap::new();
+        if items.is_empty() {
+            return (result, None);
+        }
+
+        // Build the GQL query with aliases
+        let fragments: Vec<String> = items.iter()
+            .map(|it| format!("{}: {}", it.alias, it.gql_fragment))
+            .collect();
+        let gql = format!("{{ {} }}", fragments.join(" "));
+        let body = serde_json::json!({"query": gql}).to_string();
+
+        info!("GQL batch request: {} queries, body_len={}", items.len(), body.len());
+
+        let resp = match self.http.post(&self.gql_url)
+            .header("Content-Type", "application/json")
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("GQL batch HTTP request failed: {}", e);
+                warn!("{} body={}", msg, &body[..body.len().min(1000)]);
+                return (result, Some(msg));
+            }
+        };
+
+        let status = resp.status().as_u16();
+        let resp_text = match resp.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                let msg = format!("GQL batch read body failed: {}", e);
+                warn!("{} body={}", msg, &body[..body.len().min(1000)]);
+                return (result, Some(msg));
+            }
+        };
+
+        if status < 200 || status >= 300 {
+            let msg = format!("GQL batch HTTP {} body={:.500}", status, &resp_text[..resp_text.len().min(500)]);
+            warn!("{} request_body={}", msg, &body[..body.len().min(1000)]);
+            return (result, Some(msg));
+        }
+
+        // Parse as generic JSON and extract each alias
+        let parsed: serde_json::Value = match serde_json::from_str(&resp_text) {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = format!("GQL batch JSON parse error: {} body={:.500}", e, &resp_text[..resp_text.len().min(500)]);
+                warn!("{}", msg);
+                return (result, Some(msg));
+            }
+        };
+
+        // Log GQL-level errors with full detail
+        if let Some(errors) = parsed.get("errors") {
+            warn!("GQL batch response errors: {}", serde_json::to_string_pretty(errors).unwrap_or_else(|_| format!("{:?}", errors)));
+        }
+
+        // Extract data per alias
+        if let Some(data) = parsed.get("data") {
+            for item in items {
+                if let Some(val) = data.get(&item.alias) {
+                    if val.is_null() {
+                        // null means GQL resolved the query but returned null (not found or error)
+                        continue;
+                    }
+                    result.insert(item.alias.clone(), val.clone());
+                }
+            }
+        }
+
+        (result, None)
     }
 
     /// If GQL alert was active and queries now succeed, send recovery.
@@ -1042,6 +1203,8 @@ mod tests {
                 admin: crate::config::AdminConfig { address: "0xAdmin".into() },
                 hot_wallet: crate::config::HotWalletConfig { private_key: String::new(), gas_min_balance: "0.1".into() },
                 gql_url: "https://api.morpho.org/graphql".into(),
+                gql_polling_interval_secs: 12,
+                gql_batch_size: 100,
                 chains: Default::default(),
                 flashbots: None,
             }),
@@ -1112,7 +1275,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_editing_to_monitoring() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Editing);
@@ -1127,7 +1290,7 @@ mod tests {
         // Bug regression: Editing→Monitoring must NOT trigger recovery notification.
         // We can't easily assert "no notification" here, but the transition must not crash
         // and the status must be Monitoring, not any other state.
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Editing);
@@ -1142,7 +1305,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_monitoring_to_alerting_seeds_state() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Monitoring);
@@ -1162,7 +1325,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_monitoring_to_liquidating_seeds_state() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Monitoring);
@@ -1178,7 +1341,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_alerting_recovery_after_3_normal() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
 
@@ -1211,7 +1374,7 @@ mod tests {
         // After server restart, AlertManager state is lost but orders.json remembers
         // the order was Alerting. First poll with normal conditions should seed the
         // state (so recovery can work) and stay Alerting — NOT recover immediately.
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
 
@@ -1232,7 +1395,7 @@ mod tests {
     #[tokio::test]
     async fn test_integration_restart_full_recovery_after_seed() {
         // After restart + seed, 3 consecutive normal rounds → recovery
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Alerting);
@@ -1256,7 +1419,7 @@ mod tests {
     #[tokio::test]
     async fn test_integration_restart_with_risk_triggers_immediately() {
         // After restart, if conditions are STILL triggered, seed + trigger alert
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Alerting);
@@ -1271,7 +1434,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_alerting_to_liquidating() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
 
@@ -1295,7 +1458,7 @@ mod tests {
         // (Alerting, true, false) hits the _ catch-all and stays None → no change.
         // But we need to test flapping: risk returns during recovery streak.
 
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let key = test_key();
@@ -1321,7 +1484,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_monitoring_stays_monitoring() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Monitoring);
@@ -1334,7 +1497,7 @@ mod tests {
     #[tokio::test]
     async fn test_integration_liquidation_priority_over_alert() {
         // Monitoring with BOTH alert and liquidation triggers → Liquidating
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
         let order = make_test_order(OrderStatus::Monitoring);
@@ -1347,7 +1510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_ended_no_transition() {
-        let monitor = GqlMonitor::new("https://test", 60);
+        let monitor = GqlMonitor::new("https://test", 60, 100);
         let state = make_test_app_state();
         let alert_mgr = make_alert_manager();
 
@@ -1367,7 +1530,7 @@ mod tests {
 
     #[test]
     fn test_gql_monitor_new() {
-        let m = GqlMonitor::new("https://api.morpho.org/graphql", 60);
+        let m = GqlMonitor::new("https://api.morpho.org/graphql", 60, 100);
         assert_eq!(m.gql_url, "https://api.morpho.org/graphql");
         assert_eq!(m.polling_interval_secs, 60);
     }

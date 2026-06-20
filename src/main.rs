@@ -78,7 +78,11 @@ async fn main() {
         .fallback_service(ServeDir::new("static"));
 
     // Start GQL monitor (always on — zero-config fallback)
-    let gql_monitor = GqlMonitor::new(&state.config.gql_url, 12);
+    let gql_monitor = GqlMonitor::new(
+        &state.config.gql_url,
+        state.config.gql_polling_interval_secs,
+        state.config.gql_batch_size,
+    );
     tokio::spawn({
         let s = state.clone();
         let am = alert_manager.clone();

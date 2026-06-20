@@ -15,6 +15,10 @@ pub struct AppConfig {
     pub hot_wallet: HotWalletConfig,
     #[serde(default = "default_gql_url")]
     pub gql_url: String,
+    #[serde(default = "default_gql_polling_interval")]
+    pub gql_polling_interval_secs: u64,
+    #[serde(default = "default_gql_batch_size")]
+    pub gql_batch_size: usize,
     #[serde(default)]
     pub chains: ChainsConfig,
     pub flashbots: Option<FlashbotsConfig>,
@@ -133,6 +137,14 @@ fn default_polling_interval() -> u64 {
     12
 }
 
+fn default_gql_polling_interval() -> u64 {
+    12
+}
+
+fn default_gql_batch_size() -> usize {
+    100
+}
+
 fn default_gql_url() -> String {
     "https://api.morpho.org/graphql".into()
 }
@@ -207,6 +219,8 @@ impl Default for AppConfig {
             admin: AdminConfig { address: String::new() },
             hot_wallet: HotWalletConfig { private_key: String::new(), gas_min_balance: default_gas_min() },
             gql_url: default_gql_url(),
+            gql_polling_interval_secs: default_gql_polling_interval(),
+            gql_batch_size: default_gql_batch_size(),
             chains: ChainsConfig::default(),
             flashbots: None,
         }

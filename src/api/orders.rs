@@ -303,6 +303,8 @@ mod tests {
                     gas_min_balance: "0.1".into(),
                 },
                 gql_url: "https://api.morpho.org/graphql".into(),
+                gql_polling_interval_secs: 12,
+                gql_batch_size: 100,
                 chains: ChainsConfig {
                     ethereum: Some(ChainConfig {
                         rpc_ws: None,
