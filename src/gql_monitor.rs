@@ -337,13 +337,22 @@ impl GqlMonitor {
             }
             // Alerting → Monitoring on recovery
             (OrderStatus::Alerting, false, false) => {
-                let decision = alert_manager
-                    .evaluate_risk(&order.chain, &order.market_id, &order.user_address, false)
-                    .await;
-                if decision == AlertDecision::Recovered {
-                    Some(OrderStatus::Monitoring)
-                } else {
+                // After server restart, in-memory alert state is lost. If the state
+                // was never seeded (in_alert=false), seed it now and stay Alerting.
+                // Recovery will be checked on subsequent polls (3 normal rounds needed).
+                let key = AlertManager::state_key(&order.chain, &order.market_id, &order.user_address);
+                if !alert_manager.get_state(&key).await.in_alert {
+                    alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
                     None
+                } else {
+                    let decision = alert_manager
+                        .evaluate_risk(&order.chain, &order.market_id, &order.user_address, false)
+                        .await;
+                    if decision == AlertDecision::Recovered {
+                        Some(OrderStatus::Monitoring)
+                    } else {
+                        None
+                    }
                 }
             }
             // Alerting → Liquidating
@@ -1196,6 +1205,69 @@ mod tests {
         assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
         assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 0);
+    }
+
+    #[tokio::test]
+    async fn test_integration_restart_unseeded_alert_seeds_and_stays() {
+        // After server restart, AlertManager state is lost but orders.json remembers
+        // the order was Alerting. First poll with normal conditions should seed the
+        // state (so recovery can work) and stay Alerting — NOT recover immediately.
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+
+        // Simulate restart: order is Alerting, alert state is fresh (in_alert=false)
+        assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
+        let order = make_test_order(OrderStatus::Alerting);
+        insert_test_order(&state, order.clone()).await;
+
+        // Poll: conditions normal, state unseeded → seed and stay Alerting
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
+        assert!(alert_mgr.get_state(&test_key()).await.in_alert,
+            "Restart: must seed alert state so recovery can work");
+        assert_eq!(alert_mgr.get_state(&test_key()).await.backoff_level, 1);
+        assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 0);
+    }
+
+    #[tokio::test]
+    async fn test_integration_restart_full_recovery_after_seed() {
+        // After restart + seed, 3 consecutive normal rounds → recovery
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Alerting);
+        insert_test_order(&state, order.clone()).await;
+
+        // Poll 1: restart seed
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
+        assert!(alert_mgr.get_state(&test_key()).await.in_alert);
+
+        // Polls 2-4: 3 normal rounds
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 1);
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 2);
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
+        assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
+    }
+
+    #[tokio::test]
+    async fn test_integration_restart_with_risk_triggers_immediately() {
+        // After restart, if conditions are STILL triggered, seed + trigger alert
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Alerting);
+        insert_test_order(&state, order.clone()).await;
+
+        // (Alerting, true, false) → calls evaluate_risk(true) directly, seeds and stays
+        monitor.transition_state(&order, true, &["below".into()], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
+        assert!(alert_mgr.get_state(&test_key()).await.in_alert,
+            "Re-trigger must also seed state on fresh start");
     }
 
     #[tokio::test]
