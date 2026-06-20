@@ -95,9 +95,7 @@ struct VaultData {
 struct VaultInfo {
     total_assets_usd: Option<f64>,
     liquidity_usd: Option<f64>,
-    idle_assets_usd: Option<f64>,
-    force_deallocatable_liquidity_usd: Option<f64>,
-    avg_net_apy: Option<f64>,
+    net_apy: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -900,7 +898,7 @@ impl GqlMonitor {
     async fn query_vault(&self, chain: &str, vault_id: &str) -> AppResult<VaultInfo> {
         let cid = chain_id(chain);
         let gql = format!(
-            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd idleAssetsUsd forceDeallocatableLiquidityUsd avgNetApy }} }}",
+            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd netApy }} }}",
             vid = vault_id, cid = cid
         );
         let query = serde_json::json!({"query": gql}).to_string();
@@ -1075,16 +1073,14 @@ async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
 }
 
 async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
-    let liq = vi.liquidity_usd.unwrap_or(0.0)
-        + vi.idle_assets_usd.unwrap_or(0.0)
-        + vi.force_deallocatable_liquidity_usd.unwrap_or(0.0);
+    let liq = vi.liquidity_usd.unwrap_or(0.0);
     let mut cache = state.market_cache.write().await;
     cache.insert(
         vault_id.to_string(),
         CachedData::Vault {
             deposits: format!("{:.2}", vi.total_assets_usd.unwrap_or(0.0)),
             liquidity: format!("{:.2}", liq),
-            apy: format!("{:.4}", vi.avg_net_apy.unwrap_or(0.0)),
+            apy: format!("{:.4}", vi.net_apy.unwrap_or(0.0)),
             updated_at: Utc::now().timestamp(),
         },
     );
@@ -1193,10 +1189,8 @@ fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> Vec
 /// Evaluate vault conditions, return triggered metric details.
 fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> Vec<String> {
     let total = vault.total_assets_usd.unwrap_or(0.0);
-    let liq = vault.liquidity_usd.unwrap_or(0.0)
-        + vault.idle_assets_usd.unwrap_or(0.0)
-        + vault.force_deallocatable_liquidity_usd.unwrap_or(0.0);
-    let apy = vault.avg_net_apy.unwrap_or(0.0);
+    let liq = vault.liquidity_usd.unwrap_or(0.0);
+    let apy = vault.net_apy.unwrap_or(0.0);
 
     let mut reasons = Vec::new();
     reasons.extend(evaluate_f64_condition(
