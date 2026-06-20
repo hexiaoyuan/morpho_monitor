@@ -426,10 +426,12 @@ impl BotExecutor {
             // Simulation passed — build signed tx with EIP-1559 gas
             let balance = self.check_balance().await?;
             if balance < self.gas_min_balance {
-                return Err(AppError::Execution(format!(
-                    "Hot wallet balance too low: {} (min: {})",
-                    balance, self.gas_min_balance
-                )));
+                warn!("Hot wallet balance too low for order {} (attempt {}/{}): {} (min: {})",
+                    order.id, attempt, max_attempts, balance, self.gas_min_balance);
+                if attempt < max_attempts {
+                    tokio::time::sleep(retry_delay).await;
+                }
+                continue;
             }
 
             let signer = PrivateKeySigner::from_str(&self.private_key_hex).map_err(|e| {
@@ -443,8 +445,8 @@ impl BotExecutor {
             })?;
             let gas_limit = gas * 120 / 100; // 20% buffer
 
-            // Get base fee and priority fee (Alloy v2 returns u128)
-            let base_fee: u128 = provider.get_gas_price().await.map_err(|e| {
+            // Get effective gas price (base fee + priority fee on EIP-1559 chains)
+            let effective_gas_price: u128 = provider.get_gas_price().await.map_err(|e| {
                 AppError::RpcError(format!("Failed to get gas price: {}", e))
             })?;
             let max_priority_fee: u128 = provider
@@ -454,9 +456,10 @@ impl BotExecutor {
 
             // Add 0.01 gwei extra = 10_000_000 wei
             let extra: u128 = 10_000_000;
+            // max_fee = effective_gas_price + extra (already includes base + priority, no double-count)
             let tx = tx
                 .with_gas_limit(gas_limit)
-                .with_max_fee_per_gas(base_fee + max_priority_fee + extra)
+                .with_max_fee_per_gas(effective_gas_price + extra)
                 .with_max_priority_fee_per_gas(max_priority_fee + extra);
 
             let pending = match provider.send_transaction(tx).await {
@@ -561,7 +564,6 @@ fn is_retryable_error(err: &str) -> bool {
     lower.contains("notenoughliquidity")
         || lower.contains("insufficient")
         || lower.contains("erc20insufficientbalance")
-        || lower.contains("revert")
 }
 
 // ---------------------------------------------------------------------------

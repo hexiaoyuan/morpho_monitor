@@ -190,7 +190,7 @@ pub struct AlertConfig {
 
 /// Real-time monitoring state for one position/market.
 /// Alert/backoff logic is handled by AlertState in the alert module.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorState {
     /// Chain identifier
     pub chain: String,
@@ -236,7 +236,7 @@ pub struct AppState {
 }
 
 /// Cached market or vault data from GQL queries.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum CachedData {
     Market {

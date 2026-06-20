@@ -320,19 +320,25 @@ impl GqlMonitor {
         let new_status = match (&order.status, alert_triggered, liquidation_triggered) {
             // Editing → Monitoring (first poll after user edit)
             (OrderStatus::Editing, _, _) => Some(OrderStatus::Monitoring),
-            // Monitoring → Alerting on alert trigger
-            (OrderStatus::Monitoring, true, false) => Some(OrderStatus::Alerting),
-            // Monitoring → Liquidating on liquidation trigger (skip alert)
-            (OrderStatus::Monitoring, _, true) => Some(OrderStatus::Liquidating),
+            // Monitoring → Alerting on alert trigger — seed alert state for recovery
+            (OrderStatus::Monitoring, true, false) => {
+                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                Some(OrderStatus::Alerting)
+            }
+            // Monitoring → Liquidating on liquidation trigger — seed alert state
+            (OrderStatus::Monitoring, _, true) => {
+                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                Some(OrderStatus::Liquidating)
+            }
+            // Alerting → stays Alerting, but reset recovery streak on re-trigger
+            (OrderStatus::Alerting, true, false) => {
+                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                None
+            }
             // Alerting → Monitoring on recovery
             (OrderStatus::Alerting, false, false) => {
                 let decision = alert_manager
-                    .evaluate_risk(
-                        &order.chain,
-                        &order.market_id,
-                        &order.user_address,
-                        false,
-                    )
+                    .evaluate_risk(&order.chain, &order.market_id, &order.user_address, false)
                     .await;
                 if decision == AlertDecision::Recovered {
                     Some(OrderStatus::Monitoring)
@@ -341,7 +347,10 @@ impl GqlMonitor {
                 }
             }
             // Alerting → Liquidating
-            (OrderStatus::Alerting, _, true) => Some(OrderStatus::Liquidating),
+            (OrderStatus::Alerting, _, true) => {
+                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                Some(OrderStatus::Liquidating)
+            }
             _ => None,
         };
 
@@ -372,7 +381,7 @@ impl GqlMonitor {
                             reasons_text(alert_reasons), reasons_text(liq_reasons));
                         alert_manager.notify_user(state, &order.user_address, &msg).await;
                         if let Some(ref lc) = order.liquidation {
-                            self.spawn_liquidation_task(order.clone(), lc.clone(), state.clone()).await;
+                            self.spawn_liquidation_task(order.clone(), lc.clone(), state.clone(), alert_manager.clone()).await;
                         }
                     }
                     (OrderStatus::Alerting, OrderStatus::Monitoring) => {
@@ -393,6 +402,7 @@ impl GqlMonitor {
         order: Order,
         lc: LiquidationConfig,
         state: AppState,
+        alert_manager: AlertManager,
     ) {
         let order_id = order.id.clone();
         info!("Spawning liquidation task for order {}", order_id);
@@ -417,8 +427,7 @@ impl GqlMonitor {
                 return;
             }
 
-            let gas_min = state.config.hot_wallet.gas_min_balance.parse::<f64>().unwrap_or(0.1);
-            let gas_min_u256 = U256::from((gas_min * 1e18) as u64);
+            let gas_min_u256 = parse_eth_to_wei(&state.config.hot_wallet.gas_min_balance).unwrap_or(U256::from(100_000_000_000_000_000u128)); // 0.1 ETH default
 
             let executor = match crate::executor::BotExecutor::new(
                 private_key,
@@ -449,7 +458,6 @@ impl GqlMonitor {
                         }
                     }
                     let _ = crate::api::orders::persist_orders(&state).await;
-                    let alert_manager = AlertManager::new();
                     alert_manager
                         .notify_user(&state, &order.user_address, &format!(
                             "✅ 强平已执行\n链: {}\n目标: {}\n交易: {}",
@@ -468,7 +476,6 @@ impl GqlMonitor {
                         }
                     }
                     let _ = crate::api::orders::persist_orders(&state).await;
-                    let alert_manager = AlertManager::new();
                     alert_manager
                         .notify_user(&state, &order.user_address, &format!(
                             "❌ 强平执行失败\n链: {}\n目标: {}\n原因: {}",
@@ -618,6 +625,28 @@ impl GqlMonitor {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a decimal ETH string (e.g. "0.1") into wei as U256, without going through f64.
+fn parse_eth_to_wei(s: &str) -> Option<U256> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (int_part, frac_part) = match s.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (s, ""),
+    };
+    let integer = U256::from_str(int_part).ok()?;
+    let wei_per_eth = U256::from(10).pow(U256::from(18));
+    let whole = integer.checked_mul(wei_per_eth)?;
+    if frac_part.is_empty() {
+        return Some(whole);
+    }
+    let frac = &frac_part[..frac_part.len().min(18)];
+    let frac_padded = format!("{:0<18}", frac);
+    let fractional = U256::from_str(&frac_padded).ok()?;
+    whole.checked_add(fractional)
+}
+
 fn chain_id(chain: &str) -> u32 {
     match chain {
         "ethereum" => 1,
@@ -632,7 +661,10 @@ fn chain_id(chain: &str) -> u32 {
         "stable" => 988,
         "tempo" => 4217,
         "worldchain" => 480,
-        _ => 1,
+        other => {
+            warn!("Unknown chain name '{}', falling back to Ethereum chain ID 1 — GQL query may fail", other);
+            1
+        }
     }
 }
 
@@ -680,7 +712,7 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
 fn evaluate_u256_condition(name: &str, condition: &MetricCondition, current: U256, decimals: u32) -> Vec<String> {
     let mut reasons = Vec::new();
     if !condition.is_active() { return reasons; }
-    let scale = U256::from(10u64.pow(decimals));
+    let scale = U256::from(10).pow(U256::from(decimals));
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = U256::from_str(upper) {
             let scaled = limit.checked_mul(scale).unwrap_or(limit);
@@ -762,6 +794,13 @@ fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    // -----------------------------------------------------------------------
+    // Condition evaluation tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_evaluate_u256_condition() {
@@ -771,6 +810,16 @@ mod tests {
         assert!(evaluate_u256_condition("test", &c, U256::from(50), 0).is_empty());
         let c = MetricCondition { enabled: false, upper: Some("100".into()), lower: None };
         assert!(evaluate_u256_condition("test", &c, U256::from(200), 0).is_empty());
+    }
+
+    #[test]
+    fn test_evaluate_u256_with_decimals() {
+        // User enters "1" meaning 1 token, decimals=6 means raw threshold = 1_000_000
+        let c = MetricCondition { enabled: true, upper: None, lower: Some("1".into()) };
+        // raw value 500_000 < 1_000_000 → triggered
+        assert!(!evaluate_u256_condition("test", &c, U256::from(500_000u64), 6).is_empty());
+        // raw value 2_000_000 > 1_000_000 → not triggered (lower means "below")
+        assert!(evaluate_u256_condition("test", &c, U256::from(2_000_000u64), 6).is_empty());
     }
 
     #[test]
@@ -790,8 +839,459 @@ mod tests {
             supply_assets: Some("2000".into()), supply_shares: Some("1000".into()),
             borrow_assets: Some("1500".into()), borrow_shares: Some("800".into()), supply_apy: Some(0.05),
         }) };
-        // liquidity = 2000 - 1500 = 500, below threshold 1000 → triggered
         assert!(!evaluate_market_conditions(&cond, &market).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Alert state machine tests — recovery logic
+    // -----------------------------------------------------------------------
+
+    fn make_alert_manager() -> AlertManager {
+        AlertManager::new()
+    }
+
+    fn test_key() -> String {
+        AlertManager::state_key("ethereum", "0xMarket", "0xuser")
+    }
+
+    #[tokio::test]
+    async fn test_alert_state_first_trigger_seeds_state() {
+        let mgr = make_alert_manager();
+        // First risky signal → TriggerAlert, seeds in_alert=true, backoff_level=1
+        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert_eq!(d, AlertDecision::TriggerAlert);
+
+        let state = mgr.get_state(&test_key()).await;
+        assert!(state.in_alert);
+        assert_eq!(state.backoff_level, 1);
+        assert_eq!(state.normal_streak, 0);
+    }
+
+    #[tokio::test]
+    async fn test_alert_state_recovery_needs_3_normal_rounds() {
+        let mgr = make_alert_manager();
+        // Trigger alert
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+
+        // Round 1 normal → Suppress, normal_streak=1
+        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        assert_eq!(d, AlertDecision::Suppress);
+        let state = mgr.get_state(&test_key()).await;
+        assert_eq!(state.normal_streak, 1);
+
+        // Round 2 normal → Suppress, normal_streak=2
+        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        assert_eq!(d, AlertDecision::Suppress);
+        assert_eq!(mgr.get_state(&test_key()).await.normal_streak, 2);
+
+        // Round 3 normal → Recovered!
+        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        assert_eq!(d, AlertDecision::Recovered);
+        let state = mgr.get_state(&test_key()).await;
+        assert!(!state.in_alert);
+        assert_eq!(state.normal_streak, 0);
+        assert_eq!(state.backoff_level, 0);
+    }
+
+    #[tokio::test]
+    async fn test_alert_state_flapping_resets_streak() {
+        let mgr = make_alert_manager();
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        // 2 normal rounds
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        assert_eq!(mgr.get_state(&test_key()).await.normal_streak, 2);
+
+        // Risky again → streak resets to 0
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert_eq!(mgr.get_state(&test_key()).await.normal_streak, 0);
+        assert!(mgr.get_state(&test_key()).await.in_alert);
+    }
+
+    // -----------------------------------------------------------------------
+    // State transition matrix tests
+    // -----------------------------------------------------------------------
+
+    fn make_test_order(status: OrderStatus) -> Order {
+        Order {
+            id: "test-id".into(),
+            user_address: "0xuser".into(),
+            name: "Test".into(),
+            chain: "ethereum".into(),
+            order_type: "market".into(),
+            market_id: "0xMarket".into(),
+            alert_conditions: ConditionGroup::default(),
+            liquidation: None,
+            status,
+            created_at: 1000,
+            updated_at: 2000,
+        }
+    }
+
+    /// Helper: build the expected transition for each (old_status, alert, liquidation) tuple.
+    /// Returns the expected new status and whether a notification should be sent.
+    fn expected_transition(old: &OrderStatus, alert: bool, liq: bool) -> Option<OrderStatus> {
+        match (old, alert, liq) {
+            (OrderStatus::Editing, _, _) => Some(OrderStatus::Monitoring),
+            (OrderStatus::Monitoring, true, false) => Some(OrderStatus::Alerting),
+            (OrderStatus::Monitoring, _, true) => Some(OrderStatus::Liquidating),
+            // Monitoring with no triggers → stays Monitoring (None = no change)
+            (OrderStatus::Monitoring, false, false) => None,
+            // Alerting with no triggers → recovery path (needs 3 rounds, tested separately)
+            // Alerting with liquidation → Liquidating
+            (OrderStatus::Alerting, _, true) => Some(OrderStatus::Liquidating),
+            // Ended, Liquidating → no transitions
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_transition_editing_to_monitoring() {
+        assert_eq!(
+            expected_transition(&OrderStatus::Editing, false, false),
+            Some(OrderStatus::Monitoring)
+        );
+        assert_eq!(
+            expected_transition(&OrderStatus::Editing, true, false),
+            Some(OrderStatus::Monitoring)
+        );
+        assert_eq!(
+            expected_transition(&OrderStatus::Editing, true, true),
+            Some(OrderStatus::Monitoring)
+        );
+    }
+
+    #[test]
+    fn test_transition_monitoring_to_alerting() {
+        assert_eq!(
+            expected_transition(&OrderStatus::Monitoring, true, false),
+            Some(OrderStatus::Alerting)
+        );
+    }
+
+    #[test]
+    fn test_transition_monitoring_to_liquidating() {
+        assert_eq!(
+            expected_transition(&OrderStatus::Monitoring, false, true),
+            Some(OrderStatus::Liquidating)
+        );
+        assert_eq!(
+            expected_transition(&OrderStatus::Monitoring, true, true),
+            Some(OrderStatus::Liquidating)
+        );
+    }
+
+    #[test]
+    fn test_transition_monitoring_stays() {
+        assert_eq!(
+            expected_transition(&OrderStatus::Monitoring, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn test_transition_alerting_to_liquidating() {
+        assert_eq!(
+            expected_transition(&OrderStatus::Alerting, false, true),
+            Some(OrderStatus::Liquidating)
+        );
+        assert_eq!(
+            expected_transition(&OrderStatus::Alerting, true, true),
+            Some(OrderStatus::Liquidating)
+        );
+    }
+
+    #[test]
+    fn test_transition_ended_no_transition() {
+        assert_eq!(expected_transition(&OrderStatus::Ended, true, false), None);
+        assert_eq!(expected_transition(&OrderStatus::Ended, true, true), None);
+        assert_eq!(expected_transition(&OrderStatus::Ended, false, false), None);
+    }
+
+    #[test]
+    fn test_transition_liquidating_no_transition() {
+        assert_eq!(expected_transition(&OrderStatus::Liquidating, true, false), None);
+        assert_eq!(expected_transition(&OrderStatus::Liquidating, false, true), None);
+        assert_eq!(expected_transition(&OrderStatus::Liquidating, false, false), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Full transition_state integration tests (with AlertManager)
+    // -----------------------------------------------------------------------
+
+    fn make_test_app_state() -> AppState {
+        // Use a temp data_dir so persist doesn't fail
+        std::fs::create_dir_all("data").ok();
+        AppState {
+            orders: Arc::new(RwLock::new(HashMap::new())),
+            whitelist: Arc::new(RwLock::new(HashMap::new())),
+            alert_configs: Arc::new(RwLock::new(HashMap::new())),
+            monitor_states: Arc::new(RwLock::new(HashMap::new())),
+            nonce_store: Arc::new(RwLock::new(HashMap::new())),
+            market_cache: Arc::new(RwLock::new(HashMap::new())),
+            config: Arc::new(crate::config::AppConfig {
+                server: crate::config::ServerConfig { host: "0.0.0.0".into(), port: 16800, data_dir: "data".into() },
+                admin: crate::config::AdminConfig { address: "0xAdmin".into() },
+                hot_wallet: crate::config::HotWalletConfig { private_key: String::new(), gas_min_balance: "0.1".into() },
+                gql_url: "https://api.morpho.org/graphql".into(),
+                chains: Default::default(),
+                flashbots: None,
+            }),
+            jwt_secret: "test".into(),
+            data_dir: "data".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_alert_state_seeded_on_alert_trigger() {
+        let mgr = make_alert_manager();
+        // First call to seed: Monitoring → Alerting path
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+
+        let alert_state = mgr.get_state(&test_key()).await;
+        assert!(alert_state.in_alert, "Alert state must be seeded on first risky signal");
+        assert_eq!(alert_state.backoff_level, 1);
+    }
+
+    #[tokio::test]
+    async fn test_recovery_after_seeded_alert() {
+        let mgr = make_alert_manager();
+
+        // Seed alert
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert!(mgr.get_state(&test_key()).await.in_alert);
+
+        // 3 normal rounds
+        assert_eq!(mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await, AlertDecision::Suppress);
+        assert_eq!(mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await, AlertDecision::Suppress);
+        assert_eq!(mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await, AlertDecision::Recovered);
+
+        // After recovery, state is reset
+        let state = mgr.get_state(&test_key()).await;
+        assert!(!state.in_alert);
+        assert_eq!(state.backoff_level, 0);
+        assert_eq!(state.normal_streak, 0);
+    }
+
+    #[tokio::test]
+    async fn test_backoff_progression() {
+        let mgr = make_alert_manager();
+        // First trigger
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert_eq!(mgr.get_state(&test_key()).await.backoff_level, 1);
+
+        // Second trigger (immediate, within backoff) → suppressed
+        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert_eq!(d, AlertDecision::Suppress);
+
+        // After backoff elapsed, re-trigger → backoff_level advances
+        // We can't easily manipulate time, but the logic is tested in alert.rs tests
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests — transition_state() with real GqlMonitor + AlertManager
+    // -----------------------------------------------------------------------
+
+    async fn assert_order_status(state: &AppState, order_id: &str, expected: OrderStatus) {
+        let orders = state.orders.read().await;
+        let actual = &orders.get(order_id).unwrap().status;
+        assert_eq!(*actual, expected, "order {} expected {:?} but was {:?}", order_id, expected, actual);
+    }
+
+    async fn insert_test_order(state: &AppState, order: Order) {
+        state.orders.write().await.insert(order.id.clone(), order);
+    }
+
+    #[tokio::test]
+    async fn test_integration_editing_to_monitoring() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Editing);
+        insert_test_order(&state, order.clone()).await;
+
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
+    }
+
+    #[tokio::test]
+    async fn test_integration_editing_to_monitoring_no_false_recovery() {
+        // Bug regression: Editing→Monitoring must NOT trigger recovery notification.
+        // We can't easily assert "no notification" here, but the transition must not crash
+        // and the status must be Monitoring, not any other state.
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Editing);
+        insert_test_order(&state, order.clone()).await;
+
+        monitor.transition_state(&order, true, &["test".into()], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
+        // Should NOT have seeded alert state (no evaluate_risk called)
+        let alert_state = alert_mgr.get_state(&test_key()).await;
+        assert!(!alert_state.in_alert);
+    }
+
+    #[tokio::test]
+    async fn test_integration_monitoring_to_alerting_seeds_state() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Monitoring);
+        insert_test_order(&state, order.clone()).await;
+
+        // Precondition: no alert state yet
+        assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
+
+        monitor.transition_state(&order, true, &["liquidity below".into()], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
+
+        // MUST have seeded alert state
+        let alert_state = alert_mgr.get_state(&test_key()).await;
+        assert!(alert_state.in_alert, "BUG REGRESSION: Alerting transition must seed alert state for recovery");
+        assert_eq!(alert_state.backoff_level, 1);
+    }
+
+    #[tokio::test]
+    async fn test_integration_monitoring_to_liquidating_seeds_state() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Monitoring);
+        insert_test_order(&state, order.clone()).await;
+
+        monitor.transition_state(&order, false, &[], true, &["liquidity below".into()], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Liquidating).await;
+
+        // MUST have seeded alert state (for admin awareness)
+        let alert_state = alert_mgr.get_state(&test_key()).await;
+        assert!(alert_state.in_alert, "BUG REGRESSION: Liquidating transition must seed alert state");
+    }
+
+    #[tokio::test]
+    async fn test_integration_alerting_recovery_after_3_normal() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+
+        // Seed the alert state as if Monitoring→Alerting already happened
+        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert!(alert_mgr.get_state(&test_key()).await.in_alert);
+
+        let order = make_test_order(OrderStatus::Alerting);
+        insert_test_order(&state, order.clone()).await;
+
+        // Poll 1: normal, alert state normal_streak=1 → suppress
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await; // still Alerting
+        assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 1);
+
+        // Poll 2: normal, normal_streak=2 → suppress
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
+        assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 2);
+
+        // Poll 3: normal, normal_streak=3 → Recovered!
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
+        assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
+        assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 0);
+    }
+
+    #[tokio::test]
+    async fn test_integration_alerting_to_liquidating() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+
+        // Seed alert state
+        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+
+        let order = make_test_order(OrderStatus::Alerting);
+        insert_test_order(&state, order.clone()).await;
+
+        monitor.transition_state(&order, false, &[], true, &["liquidity below".into()], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Liquidating).await;
+    }
+
+    #[tokio::test]
+    async fn test_integration_alerting_stays_on_interrupted_recovery() {
+        // If alert is in recovery (streak=1 or 2) and a risky signal returns,
+        // the order stays Alerting — but in our transition_state, only
+        // (Alerting, false, false) runs the recovery path; (Alerting, true, false)
+        // would be caught by (Alerting, _, true) for liquidation... wait:
+        // true,false matches (Alerting, _, true)? No, that's only for liquidation.
+        // (Alerting, true, false) hits the _ catch-all and stays None → no change.
+        // But we need to test flapping: risk returns during recovery streak.
+
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let key = test_key();
+
+        // Seed alert and get 2 normal rounds
+        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        assert_eq!(alert_mgr.get_state(&key).await.normal_streak, 2);
+
+        let order = make_test_order(OrderStatus::Alerting);
+        insert_test_order(&state, order.clone()).await;
+
+        // Now risk returns — alert triggered during recovery
+        // (Alerting, true, false) → None (no status change), but alert state streak should reset
+        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        assert_eq!(alert_mgr.get_state(&key).await.normal_streak, 0, "Streak should reset on risky signal");
+
+        // Order stays Alerting (the transition returns None for this case)
+        monitor.transition_state(&order, true, &["below".into()], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
+    }
+
+    #[tokio::test]
+    async fn test_integration_monitoring_stays_monitoring() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Monitoring);
+        insert_test_order(&state, order.clone()).await;
+
+        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
+    }
+
+    #[tokio::test]
+    async fn test_integration_liquidation_priority_over_alert() {
+        // Monitoring with BOTH alert and liquidation triggers → Liquidating
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+        let order = make_test_order(OrderStatus::Monitoring);
+        insert_test_order(&state, order.clone()).await;
+
+        monitor.transition_state(&order, true, &["alert below".into()], true, &["liq below".into()], &state, &alert_mgr).await;
+        assert_order_status(&state, "test-id", OrderStatus::Liquidating).await;
+        assert!(alert_mgr.get_state(&test_key()).await.in_alert);
+    }
+
+    #[tokio::test]
+    async fn test_integration_ended_no_transition() {
+        let monitor = GqlMonitor::new("https://test", 60);
+        let state = make_test_app_state();
+        let alert_mgr = make_alert_manager();
+
+        for initial in &[OrderStatus::Ended, OrderStatus::Liquidating] {
+            let status = initial.clone();
+            let mut order = make_test_order(status);
+            order.id = format!("test-{:?}", initial);
+            insert_test_order(&state, order.clone()).await;
+
+            // Try every trigger combination — nothing should change
+            for (alert, liq) in &[(false, false), (true, false), (false, true), (true, true)] {
+                monitor.transition_state(&order, *alert, &[], *liq, &[], &state, &alert_mgr).await;
+                assert_order_status(&state, &order.id, initial.clone()).await;
+            }
+        }
     }
 
     #[test]

@@ -107,6 +107,7 @@ impl AlertState {
                     self.in_alert = false;
                     self.backoff_level = 0;
                     self.normal_streak = 0;
+                    self.last_alert_at = 0;
                     return AlertDecision::Recovered;
                 }
                 // Still accumulating streak

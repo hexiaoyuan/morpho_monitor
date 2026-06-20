@@ -87,7 +87,7 @@ async fn list_orders(
             .cloned()
             .collect()
     };
-    result.sort_by_key(|o| -o.created_at);
+    result.sort_by_key(|o| std::cmp::Reverse(o.created_at));
 
     Ok(Json(ApiResponse::ok(result)))
 }
@@ -104,8 +104,8 @@ async fn create_order(
 
     let liquidation = if let Some(conditions) = body.liquidation_conditions {
         if conditions.has_active_conditions() {
-            let auth = body.authorization.expect("validated above");
-            let sig = body.signature.expect("validated above");
+            let auth = body.authorization.ok_or_else(|| AppError::Internal("authorization missing despite validation".into()))?;
+            let sig = body.signature.ok_or_else(|| AppError::Internal("signature missing despite validation".into()))?;
             Some(LiquidationConfig {
                 conditions,
                 authorization: auth,
@@ -181,6 +181,11 @@ async fn update_order(
         return Err(AppError::Forbidden("Not your order".into()));
     }
 
+    // 强平中不能修改 — 必须在所有字段赋值之前检查
+    if order.status == OrderStatus::Liquidating {
+        return Err(AppError::Validation("强平中不能修改".into()));
+    }
+
     let now = Utc::now().timestamp();
 
     order.chain = body.chain;
@@ -191,8 +196,8 @@ async fn update_order(
 
     if let Some(conditions) = body.liquidation_conditions {
         if conditions.has_active_conditions() {
-            let auth = body.authorization.expect("validated above");
-            let sig = body.signature.expect("validated above");
+            let auth = body.authorization.ok_or_else(|| AppError::Internal("authorization missing despite validation".into()))?;
+            let sig = body.signature.ok_or_else(|| AppError::Internal("signature missing despite validation".into()))?;
             order.liquidation = Some(LiquidationConfig {
                 conditions,
                 authorization: auth,
@@ -206,10 +211,8 @@ async fn update_order(
     }
 
     // Reset to Editing after user changes — GQL monitor picks up next poll
-    if order.status != OrderStatus::Liquidating {
-        info!("Order {} status: {:?} → Editing (updated)", id, order.status);
-        order.status = OrderStatus::Editing;
-    }
+    info!("Order {} status: {:?} → Editing (updated)", id, order.status);
+    order.status = OrderStatus::Editing;
     order.updated_at = now;
     let updated = order.clone();
     drop(orders);
@@ -460,6 +463,58 @@ mod tests {
         let orders = list.0.data.unwrap();
         let order = orders.iter().find(|o| o.id == order_id).unwrap();
         assert_eq!(order.status, OrderStatus::Ended);
+    }
+
+    #[tokio::test]
+    async fn test_update_liquidating_rejected() {
+        let state = make_test_state();
+        let user = AuthUser {
+            address: "0xuser1".into(),
+            role: "user".into(),
+        };
+
+        // Create an order
+        let created = create_order(State(state.clone()), user.clone(), Json(make_test_request()))
+            .await
+            .unwrap();
+        let order_id = created.1.data.clone().unwrap().id;
+
+        // Manually set it to Liquidating
+        state.orders.write().await.get_mut(&order_id).unwrap().status = OrderStatus::Liquidating;
+
+        // Try to update — must be rejected
+        let result = update_order(State(state.clone()), user.clone(), Path(order_id.clone()), Json(make_test_request())).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("强平中不能修改"), "got: {}", err);
+
+        // Verify status unchanged
+        let order = get_order(State(state.clone()), user, Path(order_id.clone())).await.unwrap();
+        assert_eq!(order.0.data.unwrap().status, OrderStatus::Liquidating);
+    }
+
+    #[tokio::test]
+    async fn test_update_ended_allowed() {
+        // Ended orders CAN be edited (reset to Editing on save)
+        let state = make_test_state();
+        let user = AuthUser {
+            address: "0xuser1".into(),
+            role: "user".into(),
+        };
+
+        let created = create_order(State(state.clone()), user.clone(), Json(make_test_request()))
+            .await
+            .unwrap();
+        let order_id = created.1.data.clone().unwrap().id;
+
+        // Manually set to Ended
+        state.orders.write().await.get_mut(&order_id).unwrap().status = OrderStatus::Ended;
+
+        // Update should succeed and reset to Editing
+        let updated = update_order(State(state.clone()), user.clone(), Path(order_id.clone()), Json(make_test_request()))
+            .await
+            .unwrap();
+        assert_eq!(updated.0.data.unwrap().status, OrderStatus::Editing);
     }
 
     #[tokio::test]

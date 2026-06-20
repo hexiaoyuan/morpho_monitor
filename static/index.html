@@ -242,7 +242,7 @@ function saveServerUrl(){
 }
 
 // ====== Session ======
-function restoreSession(){
+async function restoreSession(){
   const j=localStorage.getItem('morpho_jwt'),r=localStorage.getItem('morpho_role'),a=localStorage.getItem('morpho_address');
   if(!j||!r||!a)return;
   jwtToken=j;userRole=r;userAccount=a;
@@ -251,7 +251,7 @@ function restoreSession(){
   $('user-role').textContent=r==='admin'?'管理员':'用户';$('user-role').style.display='';$('user-role').className='badge '+(r==='admin'?'badge-amber':'badge-gray');
   $('create-order-btn').disabled=false;$('save-feishu-btn').disabled=false;$('test-feishu-btn').disabled=false;
   if(r==='admin')$('admin-tab').style.display='';
-  loadOrders();loadFeishuConfig();
+  await loadOrders();await loadFeishuConfig();
 }
 function clearSession(){
   jwtToken=null;userRole=null;userAccount=null;
@@ -271,14 +271,6 @@ const KNOWN_CHAINS={1:{chainId:'0x1',chainName:'Ethereum',rpcUrls:['https://eth.
 988:{chainId:'0x3dc',chainName:'Stable',rpcUrls:['https://rpc.stable.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},
 4217:{chainId:'0x1079',chainName:'Tempo',rpcUrls:['https://rpc.tempo.xyz'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}},
 480:{chainId:'0x1e0',chainName:'World Chain',rpcUrls:['https://worldchain-mainnet.g.alchemy.com/public'],nativeCurrency:{name:'ETH',symbol:'ETH',decimals:18}}};
-async function switchNetwork(){
-  if(!window.ethereum)return;
-  const t=$('network-select').value;if(!t)return;
-  const hex='0x'+Number(t).toString(16);
-  try{await window.ethereum.request({method:'wallet_switchEthereumChain',params:[{chainId:hex}]});showToast('已切换网络','success')}
-  catch(err){if(err.code===4902){const info=KNOWN_CHAINS[Number(t)];if(info){await window.ethereum.request({method:'wallet_addEthereumChain',params:[info]});showToast('已添加并切换网络','success')}}}
-}
-
 // ====== Wallet ======
 async function connectWallet(){
   if(jwtToken){clearSession();location.reload();return}
@@ -343,7 +335,8 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
     return '<span class="tx-'+((label==='强平')?'red':'amber')+'" style="font-size:11px">'+label+'条件: '+parts+'</span> &nbsp;';
   }
   $('orders-list').innerHTML=orders.map(o=>{
-    const canEdit=o.status!=='liquidating';
+    const isLiquidating=o.status==='liquidating';
+    const isEnded=o.status==='ended';
     const d=WATCH_DATA_CACHE[o.market_id];
     let stats='';
     if(d){
@@ -362,11 +355,12 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
       +stats
       +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
       +(d?' · 更新于 '+new Date((d.updated_at||d.updatedAt)*1000).toLocaleTimeString():'')+'</div></div>'
-      +(canEdit?'<button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button><button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
+      +'<button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button>'
+      +(!isLiquidating&&!isEnded?'<button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
       +'</div>';
   }).join('');
 }
-async function refreshOrderData(mid){const o=await api('GET','/orders');try{const data=await api('GET','/cache?ids='+mid);if(data&&data[mid])WATCH_DATA_CACHE[mid]=data[mid];renderOrders(o||[])}catch(e){}}
+async function refreshOrderData(mid){const o=await api('GET','/orders');try{const data=await api('GET','/cache?ids='+mid);if(data&&data[mid])WATCH_DATA_CACHE[mid]=data[mid];renderOrders(o||[])}catch(e){console.warn('refreshOrderData:',e)}}
 async function refreshAllOrders(){await loadOrders()}
 function setOrderRefreshInterval(){
   const secs=parseInt($('order-refresh-interval').value);localStorage.setItem('morpho_order_refresh_secs',secs);
@@ -431,8 +425,9 @@ function getVaultMetrics(){return[{id:'total_deposits',label:'Total Deposits'},{
 function renderCondFields(prefix){
   const metrics=getOrderType()==='market'?getMarketMetrics():getVaultMetrics();
   const el=$(prefix+'-conds');
+  const extra=prefix==='liq'?'<div class="tx-amber tx-sm mb2" style="padding-top:8px;border-top:1px solid var(--bdr)">⚠️ 需要签署 EIP-712 授权，请确保 Supply 份额 &gt; 0</div>':'';
   console.log('renderCondFields',prefix,'el='+!!el,'type='+getOrderType(),'metrics='+metrics.map(m=>m.id).join(','));
-  el.innerHTML=metrics.map(m=>'<div class="cond-metric">'
+  el.innerHTML=extra+metrics.map(m=>'<div class="cond-metric">'
     +'<input type="checkbox" id="'+prefix+'-'+m.id+'-enabled">'
     +'<label>'+m.label+'</label>'
     +'<input type="text" id="'+prefix+'-'+m.id+'-upper" placeholder="上限" style="width:40%">'
@@ -472,13 +467,13 @@ async function checkSupplyShares(chain,marketId,orderType){
 }
 async function createOrder(){
   if(!userAccount||!window.ethereum)return;
-  const name=$('order-name').value.trim()||marketId;
+  const marketId=$('order-target-id').value.trim();
   const chain=$('order-chain').value;
   const orderType=getOrderType();
-  const marketId=$('order-target-id').value.trim();
+  const name=$('order-name').value.trim()||marketId;
   if(!marketId){showToast('请输入 Market/Vault ID','warn');return}
   console.log('createOrder','alertEnabled='+alertEnabled(),'liqEnabled='+liqEnabled(),'orderType='+orderType);
-  const alertConds=alertEnabled()?readConditionGroup('alert'):{total_market:{},liquidity:{},supply_apy:{},total_deposits:{},net_apy:{}};
+  const alertConds=alertEnabled()?readConditionGroup('alert'):{total_market:{enabled:false,upper:null,lower:null},liquidity:{enabled:false,upper:null,lower:null},supply_apy:{enabled:false,upper:null,lower:null},total_deposits:{enabled:false,upper:null,lower:null},net_apy:{enabled:false,upper:null,lower:null}};
   let liqConds=null,authorization=null,signature=null;
   if(liqEnabled()){
     liqConds=readConditionGroup('liq');
@@ -525,6 +520,7 @@ async function signEIP712(chain){
   const domain={name:'MorphoBlue',version:'1',chainId:cid,verifyingContract:MORPHO_ADDRS[cid]||MORPHO_ADDRS[1]};
   const types={Authorization:[{name:'authorizer',type:'address'},{name:'authorized',type:'address'},{name:'isAuthorized',type:'bool'},{name:'nonce',type:'uint256'},{name:'deadline',type:'uint256'}]};
   const deadline=Math.floor(Date.now()/1000)+365*24*3600;
+  // TODO: query on-chain nonce from Morpho Blue contract instead of hardcoding '0'
   const msg={authorizer:userAccount,authorized:userAccount,isAuthorized:true,nonce:'0',deadline:String(deadline)};
   const sig=await window.ethereum.request({method:'eth_signTypedData_v4',params:[userAccount,JSON.stringify({domain,types,primaryType:'Authorization',message:msg})]});
   return{authorization:msg,signature:sig};
@@ -532,7 +528,7 @@ async function signEIP712(chain){
 async function cancelOrder(id){if(!confirm('确认删除？'))return;try{await api('DELETE','/orders/'+id);showToast('已删除','success');loadOrders()}catch(e){showToast('删除失败: '+e.message,'error')}}
 
 // ====== Markets (GQL) ======
-const GQL_URL='https://api.morpho.org/graphql',WATCH_DATA_CACHE={};
+const GQL_URL='https://api.morpho.org/graphql',WATCH_DATA_CACHE={},WATCH_GQL_CACHE={};
 const CHAIN_IDS={ethereum:1,base:8453,optimism:10,arbitrum:42161,unichain:130,hyperevm:999,monad:143,katana:747474,polygon:137,stable:988,tempo:4217,worldchain:480};
 let watchRefreshTimer=null,watchTabVisible=false,orderRefreshTimer=null,orderTabVisible=false;
 function getWatchlist(){try{return JSON.parse(localStorage.getItem('morpho_watchlist')||'[]')}catch{return[]}}
@@ -552,13 +548,13 @@ async function fetchWatchData(items){
     const now=Date.now(),data=json?.data||{};
     items.forEach((m,i)=>{const item=data['m'+i];if(!item)return;
       if(m.type==='vault'){
-        WATCH_DATA_CACHE[m.id]={
+        WATCH_GQL_CACHE[m.id]={
           totalAssetsUsd:item.totalAssetsUsd||0,
           liquidityUsd:(item.liquidityUsd||0)+(item.idleAssetsUsd||0)+(item.forceDeallocatableLiquidityUsd||0),
           apy:item.avgNetApy,decimals:0,updatedAt:now,
         };
       }else if(item?.state){
-        const st=item.state;WATCH_DATA_CACHE[m.id]={supply:BigInt(st.supplyAssets||'0'),borrow:BigInt(st.borrowAssets||'0'),apy:st.supplyApy,decimals:item.loanAsset?.decimals||18,updatedAt:now};
+        const st=item.state;WATCH_GQL_CACHE[m.id]={supply:BigInt(st.supplyAssets||'0'),borrow:BigInt(st.borrowAssets||'0'),apy:st.supplyApy,decimals:item.loanAsset?.decimals||18,updatedAt:now};
       }
     });
   }catch(e){console.error('GQL fetch:',e)}
@@ -582,7 +578,7 @@ function fmtUsd(v){if(v==null)return'--';if(v>=1e6)return'$'+(v/1e6).toFixed(2)+
 function renderWatchlist(){
   const items=getWatchlist();
   if(!items.length){$('watchlist').innerHTML='<p class="tx-center tx-dim" style="padding:32px 0;grid-column:span 2">暂无自选，点击上方按钮添加</p>';return}
-  $('watchlist').innerHTML=items.map((m,i)=>{const d=WATCH_DATA_CACHE[m.id];const isVault=m.type==='vault';const dec=d?.decimals||18;
+  $('watchlist').innerHTML=items.map((m,i)=>{const d=WATCH_GQL_CACHE[m.id];const isVault=m.type==='vault';const dec=d?.decimals||18;
     let stats='';
     if(isVault){
       stats='<div class="card-stats"><span class="tx-dim">Total Deposits</span><span class="tx-right">'+fmtUsd(d?.totalAssetsUsd)+'</span>'
@@ -610,7 +606,7 @@ function addWatchItem(){
   const items=getWatchlist();items.push({type,chain,id,name:name||id});saveWatchlist(items);
   $('add-id').value='';$('add-name').value='';closeAddModal();refreshAllWatchData();showToast('已添加','success');
 }
-function removeWatchItem(i){const m=getWatchlist();const r=m.splice(i,1)[0];if(r)delete WATCH_DATA_CACHE[r.id];saveWatchlist(m);renderWatchlist()}
+function removeWatchItem(i){const m=getWatchlist();const r=m.splice(i,1)[0];if(r){delete WATCH_DATA_CACHE[r.id];delete WATCH_GQL_CACHE[r.id]}saveWatchlist(m);renderWatchlist()}
 function setWatchRefreshInterval(){
   const secs=parseInt($('watch-refresh-interval').value);localStorage.setItem('morpho_watch_refresh_secs',secs);
   if(watchRefreshTimer){clearInterval(watchRefreshTimer);watchRefreshTimer=null}
@@ -635,7 +631,7 @@ async function testFeishuNotification(){
   if(!jwtToken){showToast('请先登录','warn');return}const t=$('feishu-test-text').value.trim();if(!t){showToast('请输入测试消息','warn');return}
   if(!$('feishu-openid').value.trim()){showToast('请先保存飞书配置','warn');return}
   $('feishu-test-status').textContent='发送中...';
-  try{const r=await api('POST','/alerts/test',{text:t});showToast('测试消息已发送！','success');$('feishu-test-status').textContent='✅ '+r;$('feishu-test-text').value=''}catch(e){$('feishu-test-status').textContent='❌ '+e.message;showToast('发送失败: '+e.message,'error')}
+  try{const r=await api('POST','/alerts/test',{text:t});showToast('测试消息已发送！','success');$('feishu-test-status').textContent='✅ '+(typeof r==='string'?r:JSON.stringify(r));$('feishu-test-text').value=''}catch(e){$('feishu-test-status').textContent='❌ '+e.message;showToast('发送失败: '+e.message,'error')}
 }
 
 // ====== Admin ======

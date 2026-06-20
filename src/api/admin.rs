@@ -17,8 +17,9 @@ pub fn admin_routes() -> Router<AppState> {
 /// GET /api/admin/whitelist
 async fn list_whitelist(
     State(state): State<AppState>,
-    _admin: AuthUser,
+    admin: AuthUser,
 ) -> Result<Json<ApiResponse<Vec<WhitelistEntry>>>, AppError> {
+    require_admin(&admin)?;
     let whitelist = state.whitelist.read().await;
     let entries: Vec<WhitelistEntry> = whitelist.values().cloned().collect();
     Ok(Json(ApiResponse::ok(entries)))
