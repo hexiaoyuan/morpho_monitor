@@ -32,7 +32,7 @@ pub async fn init_app_state(config: Arc<config::AppConfig>, jwt_secret: &str) ->
         alert_configs: Arc::new(RwLock::new(alert_configs)),
         monitor_states: Arc::new(RwLock::new(HashMap::new())),
         nonce_store: Arc::new(RwLock::new(HashMap::new())),
-        market_cache: Arc::new(RwLock::new(HashMap::new())),
+        gql_cache: Arc::new(RwLock::new(HashMap::new())),
         config,
         jwt_secret: jwt_secret.to_string(),
         data_dir,

@@ -65,7 +65,7 @@ AppState
 ├── whitelist:     Arc<RwLock<HashMap<String, WhitelistEntry>>> → data/whitelist.json
 ├── alert_configs: Arc<RwLock<HashMap<String, AlertConfig>>> → data/alerts.json
 ├── monitor_states:Arc<RwLock<HashMap<String, MonitorState>>> (in-memory only)
-├── market_cache:  Arc<RwLock<HashMap<String, CachedData>>>   (in-memory only, served via /api/cache)
+├── gql_cache:  Arc<RwLock<HashMap<String, CachedData>>>   (in-memory only, served via /api/cache)
 ├── nonce_store:   Arc<RwLock<HashMap<String, (String, i64)>>> (in-memory, SIWE nonces)
 ├── config:        Arc<AppConfig>                              (immutable after load)
 └── jwt_secret:    String

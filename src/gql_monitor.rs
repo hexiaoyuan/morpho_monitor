@@ -1062,7 +1062,7 @@ async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
             .as_ref()
             .and_then(|a| a.decimals)
             .unwrap_or(18);
-        let mut cache = state.market_cache.write().await;
+        let mut cache = state.gql_cache.write().await;
         cache.insert(
             market_id.to_string(),
             CachedData::Market {
@@ -1078,7 +1078,7 @@ async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
 
 async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
     trace!("VaultInfo: {:?}", vi);
-    let mut cache = state.market_cache.write().await;
+    let mut cache = state.gql_cache.write().await;
     cache.insert(
         vault_id.to_string(),
         CachedData::Vault {
@@ -1504,7 +1504,7 @@ mod tests {
             alert_configs: Arc::new(RwLock::new(HashMap::new())),
             monitor_states: Arc::new(RwLock::new(HashMap::new())),
             nonce_store: Arc::new(RwLock::new(HashMap::new())),
-            market_cache: Arc::new(RwLock::new(HashMap::new())),
+            gql_cache: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(crate::config::AppConfig {
                 server: crate::config::ServerConfig {
                     host: "0.0.0.0".into(),

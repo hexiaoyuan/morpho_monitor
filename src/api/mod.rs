@@ -35,7 +35,7 @@ async fn get_cache(
         .get("ids")
         .map(|s| s.split(',').collect())
         .unwrap_or_default();
-    let cache = state.market_cache.read().await;
+    let cache = state.gql_cache.read().await;
     let result: HashMap<String, CachedData> = ids
         .iter()
         .filter_map(|id| cache.get(*id).map(|v| (id.to_string(), v.clone())))

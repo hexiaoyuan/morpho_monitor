@@ -232,7 +232,7 @@ pub struct AppState {
     /// Data directory path
     pub data_dir: String,
     /// GQL market data cache: market_id -> CachedData
-    pub market_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<String, CachedData>>>,
+    pub gql_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<String, CachedData>>>,
 }
 
 /// Cached market or vault data from GQL queries.
