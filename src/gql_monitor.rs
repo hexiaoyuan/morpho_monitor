@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use alloy::primitives::U256;
 
@@ -93,9 +93,18 @@ struct VaultData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultInfo {
+    id: Option<String>,
+    name: Option<String>,
+    asset: Option<VaultAsset>,
     total_assets_usd: Option<f64>,
     liquidity_usd: Option<f64>,
     net_apy: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultAsset {
+    decimals: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +201,7 @@ impl GqlMonitor {
                 format!("marketById(chainId: {cid}, marketId: \"{mid}\") {{ id loanAsset {{ decimals }} state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }}",
                     cid = cid, mid = order.market_id)
             } else {
-                format!("vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd idleAssetsUsd forceDeallocatableLiquidityUsd avgNetApy }}",
+                format!("vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ id name asset {{ decimals }} totalAssetsUsd liquidityUsd netApy }}",
                     vid = order.market_id, cid = cid)
             };
             batch_items.push(BatchItem {
@@ -241,6 +250,7 @@ impl GqlMonitor {
                             }
                         }
                     } else {
+                        trace!("VaultInfo data={:?}", data);
                         match serde_json::from_value::<VaultInfo>(data.clone()) {
                             Ok(vi) => {
                                 if vi.total_assets_usd.is_some() {
@@ -898,7 +908,7 @@ impl GqlMonitor {
     async fn query_vault(&self, chain: &str, vault_id: &str) -> AppResult<VaultInfo> {
         let cid = chain_id(chain);
         let gql = format!(
-            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd netApy }} }}",
+            "{{ vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ id name asset {{ decimals }} totalAssetsUsd liquidityUsd netApy }} }}",
             vid = vault_id, cid = cid
         );
         let query = serde_json::json!({"query": gql}).to_string();
@@ -1040,6 +1050,7 @@ fn chain_id(chain: &str) -> u32 {
 // ---------------------------------------------------------------------------
 
 async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
+    trace!("MarketInfo: {:?}", mi);
     if let Some(ref st) = mi.state {
         let total = st
             .supply_assets
@@ -1073,14 +1084,15 @@ async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
 }
 
 async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
-    let liq = vi.liquidity_usd.unwrap_or(0.0);
     let mut cache = state.market_cache.write().await;
     cache.insert(
         vault_id.to_string(),
         CachedData::Vault {
+            name: vi.name.clone().unwrap_or_default(),
             deposits: format!("{:.2}", vi.total_assets_usd.unwrap_or(0.0)),
-            liquidity: format!("{:.2}", liq),
+            liquidity: format!("{:.2}", vi.liquidity_usd.unwrap_or(0.0)),
             apy: format!("{:.4}", vi.net_apy.unwrap_or(0.0)),
+            decimals: vi.asset.as_ref().and_then(|a| a.decimals).unwrap_or(0),
             updated_at: Utc::now().timestamp(),
         },
     );
