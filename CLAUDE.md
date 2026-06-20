@@ -41,12 +41,12 @@ Request flow:
 | `main.rs` | Entry: tokio runtime, CORS, static files, spawns background monitors |
 | `lib.rs` | `init_app_state()` — loads config + 3 JSON files into `AppState` |
 | `config.rs` | `AppConfig::load()` — TOML file → env var overrides, `AppConfig::default()` fallback |
-| `models.rs` | All data types: `Order`, `OrderStatus`, `ConditionGroup`, `MetricCondition`, `LiquidationConfig`, `Authorization`, `WhitelistEntry`, `AlertConfig`, `AppState`, `MonitorState`, API request/response types |
+| `models.rs` | All data types: `Order`, `OrderStatus`, `ConditionGroup`, `MetricCondition`, `LiquidationConfig`, `Authorization`, `WhitelistEntry`, `AlertConfig`, `AppState`, `MonitorState`, `CachedData` (market/vault GQL cache), API request/response types |
 | `error.rs` | `AppError` enum (10 variants) → HTTP status codes via `IntoResponse` |
 | `auth.rs` | JWT create/verify, `AuthUser` extractor (`FromRequestParts`), SIWE verification |
 | `alert.rs` | `AlertState` debounce state machine, `AlertManager` (per-user feishu, token cache) |
 | `monitor.rs` | `ChainMonitor` — per-chain RPC polling, nonce invalidation (condition eval delegated to GQL) |
-| `gql_monitor.rs` | `GqlMonitor` — 12s GQL polling, multi-condition evaluation (decimals-aware), vault query, state machine, admin alerts with recovery |
+| `gql_monitor.rs` | `GqlMonitor` — configurable GQL polling (default 12s), batched aliased queries (multi-market in one HTTP request, dedup, configurable batch size default 100), multi-condition evaluation (decimals-aware), vault query, state machine with restart recovery, admin alerts with recovery |
 | `executor.rs` | `BotExecutor` — atomic Multicall3 tx, retry loop with simulation, EIP-1559 gas + 0.01 gwei padding |
 | `api/mod.rs` | Router tree: `/api/auth`, `/api/orders`, `/api/alerts`, `/api/admin`, `/api/health` |
 | `api/auth.rs` | `GET /nonce`, `POST /login` |
@@ -65,6 +65,7 @@ AppState
 ├── whitelist:     Arc<RwLock<HashMap<String, WhitelistEntry>>> → data/whitelist.json
 ├── alert_configs: Arc<RwLock<HashMap<String, AlertConfig>>> → data/alerts.json
 ├── monitor_states:Arc<RwLock<HashMap<String, MonitorState>>> (in-memory only)
+├── market_cache:  Arc<RwLock<HashMap<String, CachedData>>>   (in-memory only, served via /api/cache)
 ├── nonce_store:   Arc<RwLock<HashMap<String, (String, i64)>>> (in-memory, SIWE nonces)
 ├── config:        Arc<AppConfig>                              (immutable after load)
 └── jwt_secret:    String
@@ -79,6 +80,7 @@ AppState
 1. Read `config.toml` (path from `MORPHO_CONFIG` env var, default `./config.toml`)
 2. If file missing, use `AppConfig::default()` (all empty/defaults)
 3. Env var overrides (highest priority): `MORPHO_ADMIN_ADDRESS`, `MORPHO_HOT_WALLET_KEY`, `MORPHO_GQL_URL`, `MORPHO_SERVER_PORT`, `RPC_*_HTTP`, `RPC_*_WS`
+   - `gql_polling_interval_secs` / `gql_batch_size` are TOML-only (no env var overrides), default 12s / 100
 4. **Hard requirement**: `config.admin.address` must be non-empty → set `MORPHO_ADMIN_ADDRESS` or `[admin]` in TOML
 
 JWT secret resolution (special):
@@ -104,14 +106,18 @@ POST /api/auth/login {message, signature}
 ## Order lifecycle
 
 ```
-Editing → Monitoring        (user saves order)
-Monitoring → Alerting       (any alert condition triggers)
-Monitoring → Liquidating    (liquidation condition triggers, skips alert)
+Editing → Monitoring        (user saves order, first GQL poll)
+Monitoring → Alerting       (any alert condition triggers, seeds alert state)
+Monitoring → Liquidating    (liquidation condition triggers, skips alert, seeds alert state)
 Alerting → Monitoring       (3 consecutive normal rounds → recovery)
 Alerting → Liquidating      (liquidation condition triggers)
 Liquidating → Ended         (withdrawal tx confirmed or failed)
 Any → Ended                 (user deletes order)
 ```
+
+- **Liquidating orders cannot be edited** — `update_order` rejects with "强平中不能修改" (400).
+- **Ended orders can be edited** — saved changes reset status to Editing for reuse.
+- **Restart recovery**: AlertState is in-memory; after restart, Alerting orders seed fresh state on first poll (recovery needs 3 rounds from that point).
 
 ## Alert debounce state machine
 
@@ -128,7 +134,7 @@ Decision matrix:
 - First risk trigger → instant alert, `backoff_level=1`
 - Ongoing risk + backoff elapsed → re-alert, `backoff_level++`
 - Ongoing risk within backoff → suppress
-- Normal detected while in_alert → `normal_streak++`, suppress until ≥3 → "recovered" notification
+- Normal detected while in_alert → `normal_streak++`, suppress until ≥3 → "recovered" notification (resets all fields including `last_alert_at`)
 - Risk returns during recovery streak → `normal_streak` resets to 0, back to alert branch
 
 ## Chains & contract addresses
@@ -153,8 +159,9 @@ Source: `monitor.rs:morpho_address()` and `executor.rs:BotExecutor::MULTICALL3`.
 ## Key invariants
 
 - **RPC monitors only start if `rpc_http` is configured** for that chain. Without RPC, the GQL monitor is the sole data source.
-- **GQL monitor is always-on** — launched unconditionally from `main.rs`, 12s polling.
-- **Feishu is per-user** — each user configures their own app credentials via `PUT /api/alerts`, stored in `alerts.json`. There is no global `[feishu]` config section. Orders no longer carry a `feishu_target` field — notifications route by `user_address`.
+- **GQL monitor is always-on** — launched unconditionally from `main.rs`. Uses batched aliased GraphQL queries (one HTTP request per batch of ≤`gql_batch_size` sub-queries, default 100). Identical (chain, market_id, type) queries are deduplicated. Poll interval configurable via `gql_polling_interval_secs` (default 12s).
+- **Vault liquidity** = `liquidityUsd + forceDeallocatableLiquidityUsd` (per Morpho GQL docs, `liquidityUsd` excludes force-deallocatable liquidity).
+- **Feishu is per-user** — each user configures their own app credentials via `PUT /api/alerts`, stored in `alerts.json`. There is no global `[feishu]` config section. Notifications route by `user_address`. Admin only receives system-level GQL error/recovery alerts, not individual order transitions.
 - **Orders are validated but NOT verified on-chain at creation time** — the authorization signature is only validated when a tx is actually executed.
 - **Nonce invalidation** — the RPC monitor watches `NonceIncremented` events; if a user's nonce advances beyond the order's nonce, the order is marked `Invalid`.
 - **User addresses are always lowercase** — normalized at login and whitelist entry points.
