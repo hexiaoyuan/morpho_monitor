@@ -538,7 +538,7 @@ async function fetchWatchData(items){
   const aliases=items.map((m,i)=>{
     const cid=CHAIN_IDS[m.chain]||1;
     if(m.type==='vault'){
-      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { name asset { decimals } totalAssetsUsd liquidityUsd netApy }';
+      return'm'+i+': vaultV2ByAddress(address: "'+m.id+'", chainId: '+cid+') { totalAssetsUsd liquidityUsd netApy }';
     }
     return'm'+i+': marketById(chainId: '+cid+', marketId: "'+m.id+'") { loanAsset { decimals } state { supplyAssets borrowAssets supplyApy } }';
   }).join('\n');
@@ -549,9 +549,9 @@ async function fetchWatchData(items){
     items.forEach((m,i)=>{const item=data['m'+i];if(!item)return;
       if(m.type==='vault'){
         WATCH_GQL_CACHE[m.id]={
-          name:item.name||'',totalAssetsUsd:item.totalAssetsUsd||0,
+          totalAssetsUsd:item.totalAssetsUsd||0,
           liquidityUsd:item.liquidityUsd||0,
-          apy:item.netApy,decimals:item.asset?.decimals||0,updatedAt:now,
+          apy:item.netApy,decimals:0,updatedAt:now,
         };
       }else if(item?.state){
         const st=item.state;WATCH_GQL_CACHE[m.id]={supply:BigInt(st.supplyAssets||'0'),borrow:BigInt(st.borrowAssets||'0'),apy:st.supplyApy,decimals:item.loanAsset?.decimals||18,updatedAt:now};

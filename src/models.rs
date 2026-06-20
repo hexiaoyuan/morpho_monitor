@@ -247,11 +247,9 @@ pub enum CachedData {
         updated_at: i64,
     },
     Vault {
-        name: String,
         deposits: String,
         liquidity: String,
         apy: String,
-        decimals: u32,
         updated_at: i64,
     },
 }
