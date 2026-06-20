@@ -398,7 +398,6 @@ impl GqlMonitor {
                         let msg = format!("✅ 预警已解除\n名称: {}\n链: {}\n类型: {}\n目标: {}",
                             order.name, order.chain, tlabel, order.market_id);
                         alert_manager.notify_user(state, &order.user_address, &msg).await;
-                        alert_manager.notify_admin(state, &format!("✅ 预警已解除 (用户: {})\n{}", &order.user_address, msg)).await;
                     }
                     _ => {}
                 }
