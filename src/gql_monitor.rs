@@ -3,13 +3,16 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use alloy::primitives::U256;
 
 use crate::alert::{AlertDecision, AlertManager};
 use crate::error::AppResult;
-use crate::models::{AppState, CachedData, ConditionGroup, LiquidationConfig, MetricCondition, MonitorState, Order, OrderStatus};
+use crate::models::{
+    AppState, CachedData, ConditionGroup, LiquidationConfig, MetricCondition, MonitorState, Order,
+    OrderStatus,
+};
 
 // ---------------------------------------------------------------------------
 // Morpho GraphQL response types
@@ -18,7 +21,6 @@ use crate::models::{AppState, CachedData, ConditionGroup, LiquidationConfig, Met
 #[derive(Debug, Deserialize)]
 struct GqlResponse<T> {
     data: Option<T>,
-    #[allow(dead_code)]
     errors: Option<Vec<serde_json::Value>>,
 }
 
@@ -31,7 +33,6 @@ struct MarketData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketInfo {
-    #[allow(dead_code)]
     id: String,
     loan_asset: Option<LoanAsset>,
     state: Option<MarketState>,
@@ -58,7 +59,9 @@ struct MarketState {
 }
 
 fn deser_uint_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     let v: serde_json::Value = serde::Deserialize::deserialize(d)?;
     match v {
         serde_json::Value::Number(n) => Ok(Some(n.to_string())),
@@ -116,7 +119,7 @@ pub struct GqlMonitor {
 struct BatchItem {
     alias: String,
     gql_fragment: String,
-    order_index: usize,   // index into the active_orders vec
+    order_index: usize, // index into the active_orders vec
     is_market: bool,
     chain: String,
     market_id: String,
@@ -159,7 +162,12 @@ impl GqlMonitor {
             let orders = state.orders.read().await;
             orders
                 .values()
-                .filter(|o| matches!(o.status, OrderStatus::Editing | OrderStatus::Monitoring | OrderStatus::Alerting))
+                .filter(|o| {
+                    matches!(
+                        o.status,
+                        OrderStatus::Editing | OrderStatus::Monitoring | OrderStatus::Alerting
+                    )
+                })
                 .cloned()
                 .collect()
         };
@@ -172,7 +180,8 @@ impl GqlMonitor {
         // Build deduplicated query items — same (chain, market_id, type) only queried once
         let mut seen = std::collections::HashSet::new();
         let mut batch_items: Vec<BatchItem> = Vec::new();
-        let mut order_data: Vec<(Option<MarketInfo>, Option<VaultInfo>)> = vec![(None, None); active_orders.len()];
+        let mut order_data: Vec<(Option<MarketInfo>, Option<VaultInfo>)> =
+            vec![(None, None); active_orders.len()];
 
         for (idx, order) in active_orders.iter().enumerate() {
             let is_market = order.order_type == "market";
@@ -198,8 +207,12 @@ impl GqlMonitor {
             });
         }
 
-        info!("GQL batch: {} active orders → {} unique queries (batch_size={})",
-            active_orders.len(), batch_items.len(), self.batch_size);
+        debug!(
+            "GQL batch: {} active orders → {} unique queries (batch_size={})",
+            active_orders.len(),
+            batch_items.len(),
+            self.batch_size
+        );
 
         let mut had_transient_error = false;
 
@@ -221,7 +234,10 @@ impl GqlMonitor {
                                 }
                             }
                             Err(e) => {
-                                warn!("GQL batch parse market {}: {} data={}", item.market_id, e, data);
+                                warn!(
+                                    "GQL batch parse market {}: {} data={}",
+                                    item.market_id, e, data
+                                );
                                 batch_had_error = true;
                                 (None, None, Some(format!("parse error: {}", e)))
                             }
@@ -237,7 +253,10 @@ impl GqlMonitor {
                                 }
                             }
                             Err(e) => {
-                                warn!("GQL batch parse vault {}: {} data={}", item.market_id, e, data);
+                                warn!(
+                                    "GQL batch parse vault {}: {} data={}",
+                                    item.market_id, e, data
+                                );
                                 batch_had_error = true;
                                 (None, None, Some(format!("parse error: {}", e)))
                             }
@@ -246,30 +265,56 @@ impl GqlMonitor {
                 } else {
                     // Alias missing from response entirely — transient error
                     batch_had_error = true;
-                    (None, None, Some(batch_err.clone().unwrap_or_else(|| "missing alias in GQL response".into())))
+                    (
+                        None,
+                        None,
+                        Some(
+                            batch_err
+                                .clone()
+                                .unwrap_or_else(|| "missing alias in GQL response".into()),
+                        ),
+                    )
                 };
 
                 // Store the results for all orders that share this (chain, market_id, type)
                 for (oi, order) in active_orders.iter().enumerate() {
-                    if order.chain == item.chain && order.market_id == item.market_id && order.order_type == (if item.is_market { "market" } else { "vault" }) {
-                        if let Some(ref mi) = mi_opt { order_data[oi].0 = Some(mi.clone()); }
-                        if let Some(ref vi) = vi_opt { order_data[oi].1 = Some(vi.clone()); }
+                    if order.chain == item.chain
+                        && order.market_id == item.market_id
+                        && order.order_type == (if item.is_market { "market" } else { "vault" })
+                    {
+                        if let Some(ref mi) = mi_opt {
+                            order_data[oi].0 = Some(mi.clone());
+                        }
+                        if let Some(ref vi) = vi_opt {
+                            order_data[oi].1 = Some(vi.clone());
+                        }
                     }
                 }
 
                 // Handle errors for ALL orders affected by this query failure
                 if let Some(ref err_msg) = err_msg {
                     for (_oi, order) in active_orders.iter().enumerate() {
-                        if order.chain == item.chain && order.market_id == item.market_id && order.order_type == (if item.is_market { "market" } else { "vault" }) {
-                            warn!("GQL error for order {} ({}): {}", order.id, order.market_id, err_msg);
+                        if order.chain == item.chain
+                            && order.market_id == item.market_id
+                            && order.order_type == (if item.is_market { "market" } else { "vault" })
+                        {
+                            warn!(
+                                "GQL error for order {} ({}): {}",
+                                order.id, order.market_id, err_msg
+                            );
                             if err_msg.contains("not found") {
                                 self.mark_invalid(order, state, alert_manager).await;
                             } else {
                                 had_transient_error = true;
-                                self.maybe_alert_admin(state, alert_manager, &format!(
-                                    "⚠️ GQL查询异常\n链: {}\n目标: {}\n类型: {}\n错误: {}",
-                                    order.chain, order.market_id, order.order_type, err_msg
-                                )).await;
+                                self.maybe_alert_admin(
+                                    state,
+                                    alert_manager,
+                                    &format!(
+                                        "⚠️ GQL查询异常\n链: {}\n目标: {}\n类型: {}\n错误: {}",
+                                        order.chain, order.market_id, order.order_type, err_msg
+                                    ),
+                                )
+                                .await;
                             }
                         }
                     }
@@ -296,23 +341,42 @@ impl GqlMonitor {
             let (mi_opt, vi_opt) = (&order_data[idx].0, &order_data[idx].1);
 
             let alert_reasons = match order.order_type.as_str() {
-                "market" => mi_opt.as_ref().map_or(Vec::new(), |mi| evaluate_market_conditions(&order.alert_conditions, mi)),
-                "vault" => vi_opt.as_ref().map_or(Vec::new(), |vi| evaluate_vault_conditions(&order.alert_conditions, vi)),
+                "market" => mi_opt.as_ref().map_or(Vec::new(), |mi| {
+                    evaluate_market_conditions(&order.alert_conditions, mi)
+                }),
+                "vault" => vi_opt.as_ref().map_or(Vec::new(), |vi| {
+                    evaluate_vault_conditions(&order.alert_conditions, vi)
+                }),
                 _ => continue,
             };
             let alert_triggered = !alert_reasons.is_empty();
 
-            let liq_reasons = order.liquidation.as_ref().map(|lc| {
-                match order.order_type.as_str() {
-                    "market" => mi_opt.as_ref().map_or(Vec::new(), |mi| evaluate_market_conditions(&lc.conditions, mi)),
-                    "vault" => vi_opt.as_ref().map_or(Vec::new(), |vi| evaluate_vault_conditions(&lc.conditions, vi)),
+            let liq_reasons = order
+                .liquidation
+                .as_ref()
+                .map(|lc| match order.order_type.as_str() {
+                    "market" => mi_opt.as_ref().map_or(Vec::new(), |mi| {
+                        evaluate_market_conditions(&lc.conditions, mi)
+                    }),
+                    "vault" => vi_opt.as_ref().map_or(Vec::new(), |vi| {
+                        evaluate_vault_conditions(&lc.conditions, vi)
+                    }),
                     _ => Vec::new(),
-                }
-            }).unwrap_or_default();
+                })
+                .unwrap_or_default();
             let liquidation_triggered = !liq_reasons.is_empty();
 
             self.update_monitor_state(state, order, now).await;
-            self.transition_state(order, alert_triggered, &alert_reasons, liquidation_triggered, &liq_reasons, state, alert_manager).await;
+            self.transition_state(
+                order,
+                alert_triggered,
+                &alert_reasons,
+                liquidation_triggered,
+                &liq_reasons,
+                state,
+                alert_manager,
+            )
+            .await;
         }
 
         if !had_transient_error {
@@ -323,22 +387,32 @@ impl GqlMonitor {
 
     /// Execute one batch of GQL sub-queries and return parsed JSON data per alias.
     /// Returns (alias → serde_json::Value, optional overall error message).
-    async fn execute_batch(&self, items: &[BatchItem]) -> (HashMap<String, serde_json::Value>, Option<String>) {
+    async fn execute_batch(
+        &self,
+        items: &[BatchItem],
+    ) -> (HashMap<String, serde_json::Value>, Option<String>) {
         let mut result = HashMap::new();
         if items.is_empty() {
             return (result, None);
         }
 
         // Build the GQL query with aliases
-        let fragments: Vec<String> = items.iter()
+        let fragments: Vec<String> = items
+            .iter()
             .map(|it| format!("{}: {}", it.alias, it.gql_fragment))
             .collect();
         let gql = format!("{{ {} }}", fragments.join(" "));
         let body = serde_json::json!({"query": gql}).to_string();
 
-        info!("GQL batch request: {} queries, body_len={}", items.len(), body.len());
+        debug!(
+            "GQL batch request: {} queries, body_len={}",
+            items.len(),
+            body.len()
+        );
 
-        let resp = match self.http.post(&self.gql_url)
+        let resp = match self
+            .http
+            .post(&self.gql_url)
             .header("Content-Type", "application/json")
             .body(body.clone())
             .send()
@@ -363,7 +437,11 @@ impl GqlMonitor {
         };
 
         if status < 200 || status >= 300 {
-            let msg = format!("GQL batch HTTP {} body={:.500}", status, &resp_text[..resp_text.len().min(500)]);
+            let msg = format!(
+                "GQL batch HTTP {} body={:.500}",
+                status,
+                &resp_text[..resp_text.len().min(500)]
+            );
             warn!("{} request_body={}", msg, &body[..body.len().min(1000)]);
             return (result, Some(msg));
         }
@@ -372,7 +450,11 @@ impl GqlMonitor {
         let parsed: serde_json::Value = match serde_json::from_str(&resp_text) {
             Ok(v) => v,
             Err(e) => {
-                let msg = format!("GQL batch JSON parse error: {} body={:.500}", e, &resp_text[..resp_text.len().min(500)]);
+                let msg = format!(
+                    "GQL batch JSON parse error: {} body={:.500}",
+                    e,
+                    &resp_text[..resp_text.len().min(500)]
+                );
                 warn!("{}", msg);
                 return (result, Some(msg));
             }
@@ -380,7 +462,10 @@ impl GqlMonitor {
 
         // Log GQL-level errors with full detail
         if let Some(errors) = parsed.get("errors") {
-            warn!("GQL batch response errors: {}", serde_json::to_string_pretty(errors).unwrap_or_else(|_| format!("{:?}", errors)));
+            warn!(
+                "GQL batch response errors: {}",
+                serde_json::to_string_pretty(errors).unwrap_or_else(|_| format!("{:?}", errors))
+            );
         }
 
         // Extract data per alias
@@ -412,12 +497,19 @@ impl GqlMonitor {
         };
         if was_active {
             info!("GQL queries recovered, sending admin notification");
-            alert_manager.notify_admin(state, "✅ GQL查询已恢复正常").await;
+            alert_manager
+                .notify_admin(state, "✅ GQL查询已恢复正常")
+                .await;
         }
     }
 
     /// Notify admin with 5-minute debounce to avoid spamming.
-    async fn maybe_alert_admin(&self, state: &AppState, alert_manager: &AlertManager, content: &str) {
+    async fn maybe_alert_admin(
+        &self,
+        state: &AppState,
+        alert_manager: &AlertManager,
+        content: &str,
+    ) {
         let now = Utc::now().timestamp();
         let should_alert = {
             let mut last = self.last_admin_alert.lock().unwrap();
@@ -439,17 +531,24 @@ impl GqlMonitor {
         {
             let mut orders = state.orders.write().await;
             if let Some(o) = orders.get_mut(&order.id) {
-                info!("Order {} status: {:?} → Ended (not found)", order.id, o.status);
+                info!(
+                    "Order {} status: {:?} → Ended (not found)",
+                    order.id, o.status
+                );
                 o.status = OrderStatus::Ended;
                 o.updated_at = Utc::now().timestamp();
             }
         }
         let _ = crate::api::orders::persist_orders(state).await;
         alert_manager
-            .notify_user(state, &order.user_address, &format!(
-                "⚠️ 订单自动作废\n订单 {} 的市场/金库 {} 在 GraphQL 中未找到，可能已过期。",
-                order.id, order.market_id
-            ))
+            .notify_user(
+                state,
+                &order.user_address,
+                &format!(
+                    "⚠️ 订单自动作废\n订单 {} 的市场/金库 {} 在 GraphQL 中未找到，可能已过期。",
+                    order.id, order.market_id
+                ),
+            )
             .await;
     }
 
@@ -483,17 +582,23 @@ impl GqlMonitor {
             (OrderStatus::Editing, _, _) => Some(OrderStatus::Monitoring),
             // Monitoring → Alerting on alert trigger — seed alert state for recovery
             (OrderStatus::Monitoring, true, false) => {
-                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                alert_manager
+                    .evaluate_risk(&order.chain, &order.market_id, &order.user_address, true)
+                    .await;
                 Some(OrderStatus::Alerting)
             }
             // Monitoring → Liquidating on liquidation trigger — seed alert state
             (OrderStatus::Monitoring, _, true) => {
-                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                alert_manager
+                    .evaluate_risk(&order.chain, &order.market_id, &order.user_address, true)
+                    .await;
                 Some(OrderStatus::Liquidating)
             }
             // Alerting → stays Alerting, but reset recovery streak on re-trigger
             (OrderStatus::Alerting, true, false) => {
-                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                alert_manager
+                    .evaluate_risk(&order.chain, &order.market_id, &order.user_address, true)
+                    .await;
                 None
             }
             // Alerting → Monitoring on recovery
@@ -501,9 +606,12 @@ impl GqlMonitor {
                 // After server restart, in-memory alert state is lost. If the state
                 // was never seeded (in_alert=false), seed it now and stay Alerting.
                 // Recovery will be checked on subsequent polls (3 normal rounds needed).
-                let key = AlertManager::state_key(&order.chain, &order.market_id, &order.user_address);
+                let key =
+                    AlertManager::state_key(&order.chain, &order.market_id, &order.user_address);
                 if !alert_manager.get_state(&key).await.in_alert {
-                    alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                    alert_manager
+                        .evaluate_risk(&order.chain, &order.market_id, &order.user_address, true)
+                        .await;
                     None
                 } else {
                     let decision = alert_manager
@@ -518,7 +626,9 @@ impl GqlMonitor {
             }
             // Alerting → Liquidating
             (OrderStatus::Alerting, _, true) => {
-                alert_manager.evaluate_risk(&order.chain, &order.market_id, &order.user_address, true).await;
+                alert_manager
+                    .evaluate_risk(&order.chain, &order.market_id, &order.user_address, true)
+                    .await;
                 Some(OrderStatus::Liquidating)
             }
             _ => None,
@@ -534,31 +644,80 @@ impl GqlMonitor {
                 drop(orders);
                 let _ = crate::api::orders::persist_orders(state).await;
 
-                let reasons_text = |reasons: &[String]| if reasons.is_empty() { String::new() } else { format!("\n触发条件:\n{}", reasons.iter().map(|r| format!("  • {}", r)).collect::<Vec<_>>().join("\n")) };
-                let tlabel = if order.order_type == "vault" { "Vault" } else { "Market" };
+                let reasons_text = |reasons: &[String]| {
+                    if reasons.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "\n触发条件:\n{}",
+                            reasons
+                                .iter()
+                                .map(|r| format!("  • {}", r))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    }
+                };
+                let tlabel = if order.order_type == "vault" {
+                    "Vault"
+                } else {
+                    "Market"
+                };
                 // Only notify on meaningful transitions (skip Editing→Monitoring)
                 match (&old, &new) {
                     (_, OrderStatus::Alerting) => {
-                        info!("ALERT triggered for order {} (chain={}, type={}, target={})", order.id, order.chain, order.order_type, order.market_id);
-                        let msg = format!("🚨 预警已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}",
-                            order.name, order.chain, tlabel, order.market_id, reasons_text(alert_reasons));
-                        alert_manager.notify_user(state, &order.user_address, &msg).await;
+                        info!(
+                            "ALERT triggered for order {} (chain={}, type={}, target={})",
+                            order.id, order.chain, order.order_type, order.market_id
+                        );
+                        let msg = format!(
+                            "🚨 预警已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}",
+                            order.name,
+                            order.chain,
+                            tlabel,
+                            order.market_id,
+                            reasons_text(alert_reasons)
+                        );
+                        alert_manager
+                            .notify_user(state, &order.user_address, &msg)
+                            .await;
                     }
                     (_, OrderStatus::Liquidating) => {
-                        info!("LIQUIDATION triggered for order {} (chain={}, type={}, target={})", order.id, order.chain, order.order_type, order.market_id);
-                        let msg = format!("🔥 强平已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}{}",
-                            order.name, order.chain, tlabel, order.market_id,
-                            reasons_text(alert_reasons), reasons_text(liq_reasons));
-                        alert_manager.notify_user(state, &order.user_address, &msg).await;
+                        info!(
+                            "LIQUIDATION triggered for order {} (chain={}, type={}, target={})",
+                            order.id, order.chain, order.order_type, order.market_id
+                        );
+                        let msg = format!(
+                            "🔥 强平已触发\n名称: {}\n链: {}\n类型: {}\n目标: {}{}{}",
+                            order.name,
+                            order.chain,
+                            tlabel,
+                            order.market_id,
+                            reasons_text(alert_reasons),
+                            reasons_text(liq_reasons)
+                        );
+                        alert_manager
+                            .notify_user(state, &order.user_address, &msg)
+                            .await;
                         if let Some(ref lc) = order.liquidation {
-                            self.spawn_liquidation_task(order.clone(), lc.clone(), state.clone(), alert_manager.clone()).await;
+                            self.spawn_liquidation_task(
+                                order.clone(),
+                                lc.clone(),
+                                state.clone(),
+                                alert_manager.clone(),
+                            )
+                            .await;
                         }
                     }
                     (OrderStatus::Alerting, OrderStatus::Monitoring) => {
                         info!("Recovery confirmed for order {}", order.id);
-                        let msg = format!("✅ 预警已解除\n名称: {}\n链: {}\n类型: {}\n目标: {}",
-                            order.name, order.chain, tlabel, order.market_id);
-                        alert_manager.notify_user(state, &order.user_address, &msg).await;
+                        let msg = format!(
+                            "✅ 预警已解除\n名称: {}\n链: {}\n类型: {}\n目标: {}",
+                            order.name, order.chain, tlabel, order.market_id
+                        );
+                        alert_manager
+                            .notify_user(state, &order.user_address, &msg)
+                            .await;
                     }
                     _ => {}
                 }
@@ -580,7 +739,10 @@ impl GqlMonitor {
             // Build an executor from app config
             let private_key = &state.config.hot_wallet.private_key;
             if private_key.is_empty() {
-                warn!("Cannot execute liquidation for order {}: no hot wallet key configured", order_id);
+                warn!(
+                    "Cannot execute liquidation for order {}: no hot wallet key configured",
+                    order_id
+                );
                 return;
             }
 
@@ -592,11 +754,15 @@ impl GqlMonitor {
                 .unwrap_or_default();
 
             if rpc_url.is_empty() {
-                warn!("Cannot execute liquidation for order {}: no RPC for chain {}", order_id, order.chain);
+                warn!(
+                    "Cannot execute liquidation for order {}: no RPC for chain {}",
+                    order_id, order.chain
+                );
                 return;
             }
 
-            let gas_min_u256 = parse_eth_to_wei(&state.config.hot_wallet.gas_min_balance).unwrap_or(U256::from(100_000_000_000_000_000u128)); // 0.1 ETH default
+            let gas_min_u256 = parse_eth_to_wei(&state.config.hot_wallet.gas_min_balance)
+                .unwrap_or(U256::from(100_000_000_000_000_000u128)); // 0.1 ETH default
 
             let executor = match crate::executor::BotExecutor::new(
                 private_key,
@@ -621,17 +787,24 @@ impl GqlMonitor {
                     {
                         let mut orders = state.orders.write().await;
                         if let Some(o) = orders.get_mut(&order_id) {
-                            info!("Order {} status: {:?} → Ended (liquidation ok)", order_id, o.status);
+                            info!(
+                                "Order {} status: {:?} → Ended (liquidation ok)",
+                                order_id, o.status
+                            );
                             o.status = OrderStatus::Ended;
                             o.updated_at = Utc::now().timestamp();
                         }
                     }
                     let _ = crate::api::orders::persist_orders(&state).await;
                     alert_manager
-                        .notify_user(&state, &order.user_address, &format!(
-                            "✅ 强平已执行\n链: {}\n目标: {}\n交易: {}",
-                            order.chain, order.market_id, tx_hash
-                        ))
+                        .notify_user(
+                            &state,
+                            &order.user_address,
+                            &format!(
+                                "✅ 强平已执行\n链: {}\n目标: {}\n交易: {}",
+                                order.chain, order.market_id, tx_hash
+                            ),
+                        )
                         .await;
                 }
                 Err(e) => {
@@ -639,17 +812,24 @@ impl GqlMonitor {
                     {
                         let mut orders = state.orders.write().await;
                         if let Some(o) = orders.get_mut(&order_id) {
-                            info!("Order {} status: {:?} → Ended (liquidation failed)", order_id, o.status);
+                            info!(
+                                "Order {} status: {:?} → Ended (liquidation failed)",
+                                order_id, o.status
+                            );
                             o.status = OrderStatus::Ended;
                             o.updated_at = Utc::now().timestamp();
                         }
                     }
                     let _ = crate::api::orders::persist_orders(&state).await;
                     alert_manager
-                        .notify_user(&state, &order.user_address, &format!(
-                            "❌ 强平执行失败\n链: {}\n目标: {}\n原因: {}",
-                            order.chain, order.market_id, e
-                        ))
+                        .notify_user(
+                            &state,
+                            &order.user_address,
+                            &format!(
+                                "❌ 强平执行失败\n链: {}\n目标: {}\n原因: {}",
+                                order.chain, order.market_id, e
+                            ),
+                        )
                         .await;
                 }
             }
@@ -679,25 +859,35 @@ impl GqlMonitor {
         })?;
         if status < 200 || status >= 300 {
             return Err(crate::error::AppError::RpcError(format!(
-                "GQL HTTP {} body={:.200}", status, resp_text
+                "GQL HTTP {} body={:.200}",
+                status, resp_text
             )));
         }
         let resp: GqlResponse<MarketData> = serde_json::from_str(&resp_text).map_err(|e| {
-            crate::error::AppError::RpcError(format!("GQL JSON parse: {} body={:.300}", e, resp_text))
+            crate::error::AppError::RpcError(format!(
+                "GQL JSON parse: {} body={:.300}",
+                e, resp_text
+            ))
         })?;
 
         // Check GQL errors first — only "NOT_FOUND" means the market genuinely doesn't exist
         if let Some(ref errors) = resp.errors {
             if !errors.is_empty() {
-                let is_not_found = errors.iter().any(|e| {
-                    e.get("status").and_then(|s| s.as_str()) == Some("NOT_FOUND")
-                });
+                let is_not_found = errors
+                    .iter()
+                    .any(|e| e.get("status").and_then(|s| s.as_str()) == Some("NOT_FOUND"));
                 if is_not_found {
                     return Err(crate::error::AppError::RpcError("Market not found".into()));
                 }
                 // Other GQL errors: treat as transient, log the details
-                let msg = errors.iter().find_map(|e| e.get("message").and_then(|m| m.as_str())).unwrap_or("unknown");
-                return Err(crate::error::AppError::RpcError(format!("GQL error: {}", msg)));
+                let msg = errors
+                    .iter()
+                    .find_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .unwrap_or("unknown");
+                return Err(crate::error::AppError::RpcError(format!(
+                    "GQL error: {}",
+                    msg
+                )));
             }
         }
 
@@ -731,23 +921,33 @@ impl GqlMonitor {
         })?;
         if status < 200 || status >= 300 {
             return Err(crate::error::AppError::RpcError(format!(
-                "GQL HTTP {} body={:.200}", status, resp_text
+                "GQL HTTP {} body={:.200}",
+                status, resp_text
             )));
         }
         let resp: GqlResponse<VaultData> = serde_json::from_str(&resp_text).map_err(|e| {
-            crate::error::AppError::RpcError(format!("GQL JSON parse: {} body={:.300}", e, resp_text))
+            crate::error::AppError::RpcError(format!(
+                "GQL JSON parse: {} body={:.300}",
+                e, resp_text
+            ))
         })?;
 
         if let Some(ref errors) = resp.errors {
             if !errors.is_empty() {
-                let is_not_found = errors.iter().any(|e| {
-                    e.get("status").and_then(|s| s.as_str()) == Some("NOT_FOUND")
-                });
+                let is_not_found = errors
+                    .iter()
+                    .any(|e| e.get("status").and_then(|s| s.as_str()) == Some("NOT_FOUND"));
                 if is_not_found {
                     return Err(crate::error::AppError::RpcError("Vault not found".into()));
                 }
-                let msg = errors.iter().find_map(|e| e.get("message").and_then(|m| m.as_str())).unwrap_or("unknown");
-                return Err(crate::error::AppError::RpcError(format!("GQL error: {}", msg)));
+                let msg = errors
+                    .iter()
+                    .find_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .unwrap_or("unknown");
+                return Err(crate::error::AppError::RpcError(format!(
+                    "GQL error: {}",
+                    msg
+                )));
             }
         }
 
@@ -779,14 +979,11 @@ impl GqlMonitor {
                 crate::error::AppError::RpcError(format!("GQL position parse failed: {}", e))
             })?;
 
-        Ok(resp
-            .data
-            .and_then(|d| d.position)
-            .unwrap_or(PositionInfo {
-                supply_shares: None,
-                borrow_shares: None,
-                collateral: None,
-            }))
+        Ok(resp.data.and_then(|d| d.position).unwrap_or(PositionInfo {
+            supply_shares: None,
+            borrow_shares: None,
+            collateral: None,
+        }))
     }
 }
 
@@ -831,7 +1028,10 @@ fn chain_id(chain: &str) -> u32 {
         "tempo" => 4217,
         "worldchain" => 480,
         other => {
-            warn!("Unknown chain name '{}', falling back to Ethereum chain ID 1 — GQL query may fail", other);
+            warn!(
+                "Unknown chain name '{}', falling back to Ethereum chain ID 1 — GQL query may fail",
+                other
+            );
             1
         }
     }
@@ -843,19 +1043,34 @@ fn chain_id(chain: &str) -> u32 {
 
 async fn cache_market_data(state: &AppState, market_id: &str, mi: &MarketInfo) {
     if let Some(ref st) = mi.state {
-        let total = st.supply_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
-        let borrow = st.borrow_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
+        let total = st
+            .supply_assets
+            .as_deref()
+            .and_then(|s| U256::from_str(s).ok())
+            .unwrap_or(U256::ZERO);
+        let borrow = st
+            .borrow_assets
+            .as_deref()
+            .and_then(|s| U256::from_str(s).ok())
+            .unwrap_or(U256::ZERO);
         let liq = total.checked_sub(borrow).unwrap_or(U256::ZERO);
         let apy = st.supply_apy.unwrap_or(0.0);
-        let decimals = mi.loan_asset.as_ref().and_then(|a| a.decimals).unwrap_or(18);
+        let decimals = mi
+            .loan_asset
+            .as_ref()
+            .and_then(|a| a.decimals)
+            .unwrap_or(18);
         let mut cache = state.market_cache.write().await;
-        cache.insert(market_id.to_string(), CachedData::Market {
-            total: total.to_string(),
-            liquidity: liq.to_string(),
-            apy: format!("{:.4}", apy),
-            decimals,
-            updated_at: Utc::now().timestamp(),
-        });
+        cache.insert(
+            market_id.to_string(),
+            CachedData::Market {
+                total: total.to_string(),
+                liquidity: liq.to_string(),
+                apy: format!("{:.4}", apy),
+                decimals,
+                updated_at: Utc::now().timestamp(),
+            },
+        );
     }
 }
 
@@ -864,12 +1079,15 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
         + vi.idle_assets_usd.unwrap_or(0.0)
         + vi.force_deallocatable_liquidity_usd.unwrap_or(0.0);
     let mut cache = state.market_cache.write().await;
-    cache.insert(vault_id.to_string(), CachedData::Vault {
-        deposits: format!("{:.2}", vi.total_assets_usd.unwrap_or(0.0)),
-        liquidity: format!("{:.2}", liq),
-        apy: format!("{:.4}", vi.avg_net_apy.unwrap_or(0.0)),
-        updated_at: Utc::now().timestamp(),
-    });
+    cache.insert(
+        vault_id.to_string(),
+        CachedData::Vault {
+            deposits: format!("{:.2}", vi.total_assets_usd.unwrap_or(0.0)),
+            liquidity: format!("{:.2}", liq),
+            apy: format!("{:.4}", vi.avg_net_apy.unwrap_or(0.0)),
+            updated_at: Utc::now().timestamp(),
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -878,9 +1096,16 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
 
 /// Evaluate a U256 metric condition, return triggered reasons.
 /// `decimals` scales the user's threshold to match raw token units.
-fn evaluate_u256_condition(name: &str, condition: &MetricCondition, current: U256, decimals: u32) -> Vec<String> {
+fn evaluate_u256_condition(
+    name: &str,
+    condition: &MetricCondition,
+    current: U256,
+    decimals: u32,
+) -> Vec<String> {
     let mut reasons = Vec::new();
-    if !condition.is_active() { return reasons; }
+    if !condition.is_active() {
+        return reasons;
+    }
     let scale = U256::from(10).pow(U256::from(decimals));
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = U256::from_str(upper) {
@@ -904,7 +1129,9 @@ fn evaluate_u256_condition(name: &str, condition: &MetricCondition, current: U25
 /// Evaluate an f64 metric condition, return triggered reasons.
 fn evaluate_f64_condition(name: &str, condition: &MetricCondition, current: f64) -> Vec<String> {
     let mut reasons = Vec::new();
-    if !condition.is_active() { return reasons; }
+    if !condition.is_active() {
+        return reasons;
+    }
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = upper.parse::<f64>() {
             if current > limit {
@@ -928,15 +1155,37 @@ fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> Vec
         Some(s) => s,
         None => return Vec::new(),
     };
-    let decimals = market.loan_asset.as_ref().and_then(|a| a.decimals).unwrap_or(18);
-    let total_assets = state.supply_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
-    let total_borrow = state.borrow_assets.as_deref().and_then(|s| U256::from_str(s).ok()).unwrap_or(U256::ZERO);
+    let decimals = market
+        .loan_asset
+        .as_ref()
+        .and_then(|a| a.decimals)
+        .unwrap_or(18);
+    let total_assets = state
+        .supply_assets
+        .as_deref()
+        .and_then(|s| U256::from_str(s).ok())
+        .unwrap_or(U256::ZERO);
+    let total_borrow = state
+        .borrow_assets
+        .as_deref()
+        .and_then(|s| U256::from_str(s).ok())
+        .unwrap_or(U256::ZERO);
     let liquidity = total_assets.checked_sub(total_borrow).unwrap_or(U256::ZERO);
     let apy = state.supply_apy.unwrap_or(0.0);
 
     let mut reasons = Vec::new();
-    reasons.extend(evaluate_u256_condition("Total Market", &cond.total_market, total_assets, decimals));
-    reasons.extend(evaluate_u256_condition("Liquidity", &cond.liquidity, liquidity, decimals));
+    reasons.extend(evaluate_u256_condition(
+        "Total Market",
+        &cond.total_market,
+        total_assets,
+        decimals,
+    ));
+    reasons.extend(evaluate_u256_condition(
+        "Liquidity",
+        &cond.liquidity,
+        liquidity,
+        decimals,
+    ));
     reasons.extend(evaluate_f64_condition("Supply APY", &cond.supply_apy, apy));
     reasons
 }
@@ -950,7 +1199,11 @@ fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> Vec<St
     let apy = vault.avg_net_apy.unwrap_or(0.0);
 
     let mut reasons = Vec::new();
-    reasons.extend(evaluate_f64_condition("Total Deposits", &cond.total_deposits, total));
+    reasons.extend(evaluate_f64_condition(
+        "Total Deposits",
+        &cond.total_deposits,
+        total,
+    ));
     reasons.extend(evaluate_f64_condition("Liquidity", &cond.liquidity, liq));
     reasons.extend(evaluate_f64_condition("Net APY", &cond.net_apy, apy));
     reasons
@@ -973,18 +1226,30 @@ mod tests {
 
     #[test]
     fn test_evaluate_u256_condition() {
-        let c = MetricCondition { enabled: true, upper: Some("100".into()), lower: Some("10".into()) };
+        let c = MetricCondition {
+            enabled: true,
+            upper: Some("100".into()),
+            lower: Some("10".into()),
+        };
         assert!(!evaluate_u256_condition("test", &c, U256::from(200), 0).is_empty());
         assert!(!evaluate_u256_condition("test", &c, U256::from(5), 0).is_empty());
         assert!(evaluate_u256_condition("test", &c, U256::from(50), 0).is_empty());
-        let c = MetricCondition { enabled: false, upper: Some("100".into()), lower: None };
+        let c = MetricCondition {
+            enabled: false,
+            upper: Some("100".into()),
+            lower: None,
+        };
         assert!(evaluate_u256_condition("test", &c, U256::from(200), 0).is_empty());
     }
 
     #[test]
     fn test_evaluate_u256_with_decimals() {
         // User enters "1" meaning 1 token, decimals=6 means raw threshold = 1_000_000
-        let c = MetricCondition { enabled: true, upper: None, lower: Some("1".into()) };
+        let c = MetricCondition {
+            enabled: true,
+            upper: None,
+            lower: Some("1".into()),
+        };
         // raw value 500_000 < 1_000_000 → triggered
         assert!(!evaluate_u256_condition("test", &c, U256::from(500_000u64), 6).is_empty());
         // raw value 2_000_000 > 1_000_000 → not triggered (lower means "below")
@@ -993,21 +1258,43 @@ mod tests {
 
     #[test]
     fn test_evaluate_f64_condition() {
-        let c = MetricCondition { enabled: true, upper: Some("5.0".into()), lower: Some("0.5".into()) };
+        let c = MetricCondition {
+            enabled: true,
+            upper: Some("5.0".into()),
+            lower: Some("0.5".into()),
+        };
         assert!(!evaluate_f64_condition("test", &c, 10.0).is_empty());
         assert!(!evaluate_f64_condition("test", &c, 0.1).is_empty());
         assert!(evaluate_f64_condition("test", &c, 1.0).is_empty());
-        let c = MetricCondition { enabled: false, upper: Some("5.0".into()), lower: None };
+        let c = MetricCondition {
+            enabled: false,
+            upper: Some("5.0".into()),
+            lower: None,
+        };
         assert!(evaluate_f64_condition("test", &c, 10.0).is_empty());
     }
 
     #[test]
     fn test_evaluate_market_conditions() {
-        let cond = ConditionGroup { liquidity: MetricCondition { enabled: true, upper: None, lower: Some("1000".into()) }, ..Default::default() };
-        let market = MarketInfo { id: "0x1".into(), loan_asset: None, state: Some(MarketState {
-            supply_assets: Some("2000".into()), supply_shares: Some("1000".into()),
-            borrow_assets: Some("1500".into()), borrow_shares: Some("800".into()), supply_apy: Some(0.05),
-        }) };
+        let cond = ConditionGroup {
+            liquidity: MetricCondition {
+                enabled: true,
+                upper: None,
+                lower: Some("1000".into()),
+            },
+            ..Default::default()
+        };
+        let market = MarketInfo {
+            id: "0x1".into(),
+            loan_asset: None,
+            state: Some(MarketState {
+                supply_assets: Some("2000".into()),
+                supply_shares: Some("1000".into()),
+                borrow_assets: Some("1500".into()),
+                borrow_shares: Some("800".into()),
+                supply_apy: Some(0.05),
+            }),
+        };
         assert!(!evaluate_market_conditions(&cond, &market).is_empty());
     }
 
@@ -1027,7 +1314,9 @@ mod tests {
     async fn test_alert_state_first_trigger_seeds_state() {
         let mgr = make_alert_manager();
         // First risky signal → TriggerAlert, seeds in_alert=true, backoff_level=1
-        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        let d = mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         assert_eq!(d, AlertDecision::TriggerAlert);
 
         let state = mgr.get_state(&test_key()).await;
@@ -1040,21 +1329,28 @@ mod tests {
     async fn test_alert_state_recovery_needs_3_normal_rounds() {
         let mgr = make_alert_manager();
         // Trigger alert
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
 
         // Round 1 normal → Suppress, normal_streak=1
-        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        let d = mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
         assert_eq!(d, AlertDecision::Suppress);
         let state = mgr.get_state(&test_key()).await;
         assert_eq!(state.normal_streak, 1);
 
         // Round 2 normal → Suppress, normal_streak=2
-        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        let d = mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
         assert_eq!(d, AlertDecision::Suppress);
         assert_eq!(mgr.get_state(&test_key()).await.normal_streak, 2);
 
         // Round 3 normal → Recovered!
-        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        let d = mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
         assert_eq!(d, AlertDecision::Recovered);
         let state = mgr.get_state(&test_key()).await;
         assert!(!state.in_alert);
@@ -1065,14 +1361,18 @@ mod tests {
     #[tokio::test]
     async fn test_alert_state_flapping_resets_streak() {
         let mgr = make_alert_manager();
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         // 2 normal rounds
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
         assert_eq!(mgr.get_state(&test_key()).await.normal_streak, 2);
 
         // Risky again → streak resets to 0
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         assert_eq!(mgr.get_state(&test_key()).await.normal_streak, 0);
         assert!(mgr.get_state(&test_key()).await.in_alert);
     }
@@ -1179,9 +1479,18 @@ mod tests {
 
     #[test]
     fn test_transition_liquidating_no_transition() {
-        assert_eq!(expected_transition(&OrderStatus::Liquidating, true, false), None);
-        assert_eq!(expected_transition(&OrderStatus::Liquidating, false, true), None);
-        assert_eq!(expected_transition(&OrderStatus::Liquidating, false, false), None);
+        assert_eq!(
+            expected_transition(&OrderStatus::Liquidating, true, false),
+            None
+        );
+        assert_eq!(
+            expected_transition(&OrderStatus::Liquidating, false, true),
+            None
+        );
+        assert_eq!(
+            expected_transition(&OrderStatus::Liquidating, false, false),
+            None
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1199,9 +1508,18 @@ mod tests {
             nonce_store: Arc::new(RwLock::new(HashMap::new())),
             market_cache: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(crate::config::AppConfig {
-                server: crate::config::ServerConfig { host: "0.0.0.0".into(), port: 16800, data_dir: "data".into() },
-                admin: crate::config::AdminConfig { address: "0xAdmin".into() },
-                hot_wallet: crate::config::HotWalletConfig { private_key: String::new(), gas_min_balance: "0.1".into() },
+                server: crate::config::ServerConfig {
+                    host: "0.0.0.0".into(),
+                    port: 16800,
+                    data_dir: "data".into(),
+                },
+                admin: crate::config::AdminConfig {
+                    address: "0xAdmin".into(),
+                },
+                hot_wallet: crate::config::HotWalletConfig {
+                    private_key: String::new(),
+                    gas_min_balance: "0.1".into(),
+                },
                 gql_url: "https://api.morpho.org/graphql".into(),
                 gql_polling_interval_secs: 12,
                 gql_batch_size: 100,
@@ -1217,10 +1535,14 @@ mod tests {
     async fn test_alert_state_seeded_on_alert_trigger() {
         let mgr = make_alert_manager();
         // First call to seed: Monitoring → Alerting path
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
 
         let alert_state = mgr.get_state(&test_key()).await;
-        assert!(alert_state.in_alert, "Alert state must be seeded on first risky signal");
+        assert!(
+            alert_state.in_alert,
+            "Alert state must be seeded on first risky signal"
+        );
         assert_eq!(alert_state.backoff_level, 1);
     }
 
@@ -1229,13 +1551,26 @@ mod tests {
         let mgr = make_alert_manager();
 
         // Seed alert
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         assert!(mgr.get_state(&test_key()).await.in_alert);
 
         // 3 normal rounds
-        assert_eq!(mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await, AlertDecision::Suppress);
-        assert_eq!(mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await, AlertDecision::Suppress);
-        assert_eq!(mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await, AlertDecision::Recovered);
+        assert_eq!(
+            mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+                .await,
+            AlertDecision::Suppress
+        );
+        assert_eq!(
+            mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+                .await,
+            AlertDecision::Suppress
+        );
+        assert_eq!(
+            mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+                .await,
+            AlertDecision::Recovered
+        );
 
         // After recovery, state is reset
         let state = mgr.get_state(&test_key()).await;
@@ -1248,11 +1583,14 @@ mod tests {
     async fn test_backoff_progression() {
         let mgr = make_alert_manager();
         // First trigger
-        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         assert_eq!(mgr.get_state(&test_key()).await.backoff_level, 1);
 
         // Second trigger (immediate, within backoff) → suppressed
-        let d = mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        let d = mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         assert_eq!(d, AlertDecision::Suppress);
 
         // After backoff elapsed, re-trigger → backoff_level advances
@@ -1266,7 +1604,11 @@ mod tests {
     async fn assert_order_status(state: &AppState, order_id: &str, expected: OrderStatus) {
         let orders = state.orders.read().await;
         let actual = &orders.get(order_id).unwrap().status;
-        assert_eq!(*actual, expected, "order {} expected {:?} but was {:?}", order_id, expected, actual);
+        assert_eq!(
+            *actual, expected,
+            "order {} expected {:?} but was {:?}",
+            order_id, expected, actual
+        );
     }
 
     async fn insert_test_order(state: &AppState, order: Order) {
@@ -1281,7 +1623,9 @@ mod tests {
         let order = make_test_order(OrderStatus::Editing);
         insert_test_order(&state, order.clone()).await;
 
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
     }
 
@@ -1296,7 +1640,17 @@ mod tests {
         let order = make_test_order(OrderStatus::Editing);
         insert_test_order(&state, order.clone()).await;
 
-        monitor.transition_state(&order, true, &["test".into()], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                true,
+                &["test".into()],
+                false,
+                &[],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
         // Should NOT have seeded alert state (no evaluate_risk called)
         let alert_state = alert_mgr.get_state(&test_key()).await;
@@ -1314,12 +1668,25 @@ mod tests {
         // Precondition: no alert state yet
         assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
 
-        monitor.transition_state(&order, true, &["liquidity below".into()], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                true,
+                &["liquidity below".into()],
+                false,
+                &[],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
 
         // MUST have seeded alert state
         let alert_state = alert_mgr.get_state(&test_key()).await;
-        assert!(alert_state.in_alert, "BUG REGRESSION: Alerting transition must seed alert state for recovery");
+        assert!(
+            alert_state.in_alert,
+            "BUG REGRESSION: Alerting transition must seed alert state for recovery"
+        );
         assert_eq!(alert_state.backoff_level, 1);
     }
 
@@ -1331,12 +1698,25 @@ mod tests {
         let order = make_test_order(OrderStatus::Monitoring);
         insert_test_order(&state, order.clone()).await;
 
-        monitor.transition_state(&order, false, &[], true, &["liquidity below".into()], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                false,
+                &[],
+                true,
+                &["liquidity below".into()],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Liquidating).await;
 
         // MUST have seeded alert state (for admin awareness)
         let alert_state = alert_mgr.get_state(&test_key()).await;
-        assert!(alert_state.in_alert, "BUG REGRESSION: Liquidating transition must seed alert state");
+        assert!(
+            alert_state.in_alert,
+            "BUG REGRESSION: Liquidating transition must seed alert state"
+        );
     }
 
     #[tokio::test]
@@ -1346,24 +1726,32 @@ mod tests {
         let alert_mgr = make_alert_manager();
 
         // Seed the alert state as if Monitoring→Alerting already happened
-        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        alert_mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
         assert!(alert_mgr.get_state(&test_key()).await.in_alert);
 
         let order = make_test_order(OrderStatus::Alerting);
         insert_test_order(&state, order.clone()).await;
 
         // Poll 1: normal, alert state normal_streak=1 → suppress
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await; // still Alerting
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 1);
 
         // Poll 2: normal, normal_streak=2 → suppress
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 2);
 
         // Poll 3: normal, normal_streak=3 → Recovered!
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
         assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 0);
@@ -1384,10 +1772,14 @@ mod tests {
         insert_test_order(&state, order.clone()).await;
 
         // Poll: conditions normal, state unseeded → seed and stay Alerting
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
-        assert!(alert_mgr.get_state(&test_key()).await.in_alert,
-            "Restart: must seed alert state so recovery can work");
+        assert!(
+            alert_mgr.get_state(&test_key()).await.in_alert,
+            "Restart: must seed alert state so recovery can work"
+        );
         assert_eq!(alert_mgr.get_state(&test_key()).await.backoff_level, 1);
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 0);
     }
@@ -1402,16 +1794,24 @@ mod tests {
         insert_test_order(&state, order.clone()).await;
 
         // Poll 1: restart seed
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
         assert!(alert_mgr.get_state(&test_key()).await.in_alert);
 
         // Polls 2-4: 3 normal rounds
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 1);
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_eq!(alert_mgr.get_state(&test_key()).await.normal_streak, 2);
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
         assert!(!alert_mgr.get_state(&test_key()).await.in_alert);
     }
@@ -1426,10 +1826,22 @@ mod tests {
         insert_test_order(&state, order.clone()).await;
 
         // (Alerting, true, false) → calls evaluate_risk(true) directly, seeds and stays
-        monitor.transition_state(&order, true, &["below".into()], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                true,
+                &["below".into()],
+                false,
+                &[],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
-        assert!(alert_mgr.get_state(&test_key()).await.in_alert,
-            "Re-trigger must also seed state on fresh start");
+        assert!(
+            alert_mgr.get_state(&test_key()).await.in_alert,
+            "Re-trigger must also seed state on fresh start"
+        );
     }
 
     #[tokio::test]
@@ -1439,12 +1851,24 @@ mod tests {
         let alert_mgr = make_alert_manager();
 
         // Seed alert state
-        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
+        alert_mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
 
         let order = make_test_order(OrderStatus::Alerting);
         insert_test_order(&state, order.clone()).await;
 
-        monitor.transition_state(&order, false, &[], true, &["liquidity below".into()], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                false,
+                &[],
+                true,
+                &["liquidity below".into()],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Liquidating).await;
     }
 
@@ -1464,9 +1888,15 @@ mod tests {
         let key = test_key();
 
         // Seed alert and get 2 normal rounds
-        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
-        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
-        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", false).await;
+        alert_mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
+        alert_mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
+        alert_mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", false)
+            .await;
         assert_eq!(alert_mgr.get_state(&key).await.normal_streak, 2);
 
         let order = make_test_order(OrderStatus::Alerting);
@@ -1474,11 +1904,27 @@ mod tests {
 
         // Now risk returns — alert triggered during recovery
         // (Alerting, true, false) → None (no status change), but alert state streak should reset
-        alert_mgr.evaluate_risk("ethereum", "0xMarket", "0xuser", true).await;
-        assert_eq!(alert_mgr.get_state(&key).await.normal_streak, 0, "Streak should reset on risky signal");
+        alert_mgr
+            .evaluate_risk("ethereum", "0xMarket", "0xuser", true)
+            .await;
+        assert_eq!(
+            alert_mgr.get_state(&key).await.normal_streak,
+            0,
+            "Streak should reset on risky signal"
+        );
 
         // Order stays Alerting (the transition returns None for this case)
-        monitor.transition_state(&order, true, &["below".into()], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                true,
+                &["below".into()],
+                false,
+                &[],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Alerting).await;
     }
 
@@ -1490,7 +1936,9 @@ mod tests {
         let order = make_test_order(OrderStatus::Monitoring);
         insert_test_order(&state, order.clone()).await;
 
-        monitor.transition_state(&order, false, &[], false, &[], &state, &alert_mgr).await;
+        monitor
+            .transition_state(&order, false, &[], false, &[], &state, &alert_mgr)
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Monitoring).await;
     }
 
@@ -1503,7 +1951,17 @@ mod tests {
         let order = make_test_order(OrderStatus::Monitoring);
         insert_test_order(&state, order.clone()).await;
 
-        monitor.transition_state(&order, true, &["alert below".into()], true, &["liq below".into()], &state, &alert_mgr).await;
+        monitor
+            .transition_state(
+                &order,
+                true,
+                &["alert below".into()],
+                true,
+                &["liq below".into()],
+                &state,
+                &alert_mgr,
+            )
+            .await;
         assert_order_status(&state, "test-id", OrderStatus::Liquidating).await;
         assert!(alert_mgr.get_state(&test_key()).await.in_alert);
     }
@@ -1522,7 +1980,9 @@ mod tests {
 
             // Try every trigger combination — nothing should change
             for (alert, liq) in &[(false, false), (true, false), (false, true), (true, true)] {
-                monitor.transition_state(&order, *alert, &[], *liq, &[], &state, &alert_mgr).await;
+                monitor
+                    .transition_state(&order, *alert, &[], *liq, &[], &state, &alert_mgr)
+                    .await;
                 assert_order_status(&state, &order.id, initial.clone()).await;
             }
         }
