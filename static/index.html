@@ -332,7 +332,7 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
     const active=names.filter(n=>cg[n]&&cg[n].enabled);
     if(!active.length)return'';
     const parts=active.map(n=>{const c=cg[n];const p=[];if(c.upper)p.push('&lt;'+c.upper);if(c.lower)p.push('&gt;'+c.lower);return n+':'+p.join(' & ');}).join('; ');
-    return '<span class="tx-'+((label==='强平')?'red':'amber')+'" style="font-size:11px">'+label+'条件: '+parts+'</span> &nbsp;';
+    return '<span class="tx-mid" style="font-size:11px">'+label+'条件: '+parts+'</span> &nbsp;';
   }
   $('orders-list').innerHTML=orders.map(o=>{
     const isLiquidating=o.status==='liquidating';
