@@ -190,7 +190,7 @@ impl GqlMonitor {
             }
             let cid = chain_id(&order.chain);
             let fragment = if is_market {
-                format!("marketById(chainId: {cid}, marketId: \"{mid}\") {{ id loanAsset {{ decimals }} state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }}",
+                format!("marketById(chainId: {cid}, marketId: \"{mid}\") {{ loanAsset {{ decimals }} state {{ supplyAssets borrowAssets supplyApy }} }}",
                     cid = cid, mid = order.market_id)
             } else {
                 format!("vaultV2ByAddress(address: \"{vid}\", chainId: {cid}) {{ totalAssetsUsd liquidityUsd forceDeallocatableLiquidityUsd netApy }}",
@@ -226,7 +226,7 @@ impl GqlMonitor {
                         trace!("MarketInfo.data={:?}", data);
                         match serde_json::from_value::<MarketInfo>(data.clone()) {
                             Ok(mi) => {
-                                if !mi.id.is_empty() || mi.state.is_some() {
+                                if mi.state.is_some() {
                                     cache_market_data(state, &item.market_id, &mi).await;
                                     (Some(mi), None, None)
                                 } else {
@@ -840,7 +840,7 @@ impl GqlMonitor {
     /// Query market state from Morpho GraphQL.
     async fn query_market(&self, chain: &str, market_id: &str) -> AppResult<MarketInfo> {
         let cid = chain_id(chain);
-        let gql = format!("{{ marketById(chainId: {cid}, marketId: \"{mid}\") {{ id loanAsset {{ decimals }} state {{ supplyAssets supplyShares borrowAssets borrowShares supplyApy }} }} }}",
+        let gql = format!("{{ marketById(chainId: {cid}, marketId: \"{mid}\") {{ loanAsset {{ decimals }} state {{ supplyAssets borrowAssets supplyApy }} }} }}",
             cid = cid, mid = market_id);
         let query = serde_json::json!({"query": gql}).to_string();
 
