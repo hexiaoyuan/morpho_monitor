@@ -1097,30 +1097,37 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
 /// Evaluate a U256 metric condition, return triggered reasons.
 /// `decimals` scales the user's threshold to match raw token units.
 /// Format a raw U256 token amount into a human-readable string using decimals.
+/// Shows full precision with trailing zeros trimmed, minimum 2 decimal places.
 fn fmt_token_amount(value: U256, decimals: u32) -> String {
+    if decimals == 0 {
+        return format!("{}", value);
+    }
     let divisor = U256::from(10).pow(U256::from(decimals));
     let whole = value / divisor;
     let frac = value % divisor;
-    // Pad fractional part to decimals digits
     let frac_str = format!("{:0>width$}", frac, width = decimals as usize);
-    // Trim trailing zeros
-    let frac_trimmed = frac_str.trim_end_matches('0');
-    if frac_trimmed.is_empty() {
-        format!("{}", whole)
-    } else {
-        format!("{}.{}", whole, frac_trimmed)
-    }
+    // Trim trailing zeros, but keep at least 2 decimal places
+    let trimmed = frac_str.trim_end_matches('0');
+    let keep = (decimals as usize).min(2);
+    let display = if trimmed.len() < keep { &frac_str[..keep] } else { trimmed };
+    format!("{}.{}", whole, display)
 }
 
-/// Format f64 as USD with $ and comma grouping.
+/// Format f64 as USD with $ and comma grouping (2 decimal places).
 fn fmt_usd(value: f64) -> String {
-    if value >= 1e6 {
-        format!("${:.2}M", value / 1e6)
-    } else if value >= 1e3 {
-        format!("${:.2}K", value / 1e3)
-    } else {
-        format!("${:.2}", value)
+    let abs = value.abs();
+    let sign = if value < 0.0 { "-" } else { "" };
+    let int_part = abs.trunc() as u64;
+    let frac_part = (abs.fract() * 100.0).round() as u64 % 100;
+    // Add comma grouping
+    let int_str = int_part.to_string();
+    let mut grouped = String::new();
+    for (i, c) in int_str.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { grouped.push(','); }
+        grouped.push(c);
     }
+    let int_display: String = grouped.chars().rev().collect();
+    format!("${}{}.{:02}", sign, int_display, frac_part)
 }
 
 /// Format f64 APY decimal as percentage.
