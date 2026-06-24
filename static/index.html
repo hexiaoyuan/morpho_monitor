@@ -326,12 +326,24 @@ function renderOrders(orders){
   const sl={monitoring:'监控中',alerting:'预警中',liquidating:'强平中',editing:'编辑中',ended:'已结束'};
   const typeBadge=o=>o.order_type==='vault'?'badge-blue':'badge-green';
 function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/10**Number(dec||18);if(n>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return '$'+(n/1e3).toFixed(2)+'K';return '$'+n.toFixed(2)}
-  function conds(cg,oType,label){
+  function formatCondVal(v,n,oType,dec){
+    if(v==null||v==='')return '';
+    const isPct=n==='supply_apy'||n==='net_apy';
+    const isUsd=(oType==='vault'&&(n==='total_deposits'||n==='liquidity'));
+    if(isPct)return (parseFloat(v)*100).toFixed(2)+'%';
+    if(isUsd){const x=parseFloat(v);return '$'+x.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}
+    // token amount — format with decimals
+    const num=parseFloat(v);
+    if(num>=1e6)return (num/1e6).toFixed(2)+'M';
+    if(num>=1e3)return (num/1e3).toFixed(2)+'K';
+    return num.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:dec||6});
+  }
+  function conds(cg,oType,label,dec){
     if(!cg)return'';
     const names=oType==='market'?['total_market','liquidity','supply_apy']:['total_deposits','liquidity','net_apy'];
     const active=names.filter(n=>cg[n]&&cg[n].enabled);
     if(!active.length)return'';
-    const parts=active.map(n=>{const c=cg[n];const p=[];if(c.upper)p.push('&lt;'+c.upper);if(c.lower)p.push('&gt;'+c.lower);return n+':'+p.join(' & ');}).join('; ');
+    const parts=active.map(n=>{const c=cg[n];const p=[];if(c.upper)p.push('&lt;'+formatCondVal(c.upper,n,oType,dec));if(c.lower)p.push('&gt;'+formatCondVal(c.lower,n,oType,dec));return n+':'+p.join(' & ');}).join('; ');
     return '<span class="tx-mid" style="font-size:11px">'+label+'条件: '+parts+'</span> &nbsp;';
   }
   $('orders-list').innerHTML=orders.map(o=>{
@@ -351,7 +363,7 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
       +' <span class="tx-xs tx-mid">'+o.chain+'</span> <span class="badge '+typeBadge(o)+'" style="font-size:9px">'+o.order_type.toUpperCase()+'</span>'
       +(o.name?' <span style="font-weight:500">'+o.name+'</span> ':'')
       +'<span class="tx-xs tx-dim tx-mono" onclick="copyText(\''+o.market_id+'\')" title="点击复制" style="cursor:pointer">'+shortenAddr(o.market_id)+' 📋</span> '+' <a href="https://app.morpho.org/'+o.chain+'/'+o.order_type+'/'+o.market_id+'" target="_blank" title="Morpho 官网" class="btn-gray btn-xs">🌐</a></div>'
-      +'<div class="tx-sm">'+conds(o.alert_conditions,o.order_type,'预警')+conds(o.liquidation?o.liquidation.conditions:null,o.order_type,'强平')+'</div>'
+      +'<div class="tx-sm">'+conds(o.alert_conditions,o.order_type,'预警',d?.decimals)+conds(o.liquidation?o.liquidation.conditions:null,o.order_type,'强平',d?.decimals)+'</div>'
       +stats
       +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
       +(d?' · 更新于 '+new Date((d.updated_at||d.updatedAt)*1000).toLocaleTimeString():'')+'</div></div>'
