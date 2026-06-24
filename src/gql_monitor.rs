@@ -33,6 +33,8 @@ struct MarketData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketInfo {
+    #[serde(default)]
+    #[allow(dead_code)]
     id: String,
     loan_asset: Option<LoanAsset>,
     state: Option<MarketState>,
