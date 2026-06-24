@@ -34,7 +34,6 @@ struct MarketData {
 #[serde(rename_all = "camelCase")]
 struct MarketInfo {
     #[serde(default)]
-    #[allow(dead_code)]
     id: String,
     loan_asset: Option<LoanAsset>,
     state: Option<MarketState>,
@@ -227,7 +226,8 @@ impl GqlMonitor {
                     if item.is_market {
                         trace!("MarketInfo.data={:?}", data);
                         match serde_json::from_value::<MarketInfo>(data.clone()) {
-                            Ok(mi) => {
+                            Ok(mut mi) => {
+                                mi.id = item.market_id.clone();
                                 if mi.state.is_some() {
                                     cache_market_data(state, &item.market_id, &mi).await;
                                     (Some(mi), None, None)
