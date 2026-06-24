@@ -1096,6 +1096,38 @@ async fn cache_vault_data(state: &AppState, vault_id: &str, vi: &VaultInfo) {
 
 /// Evaluate a U256 metric condition, return triggered reasons.
 /// `decimals` scales the user's threshold to match raw token units.
+/// Format a raw U256 token amount into a human-readable string using decimals.
+fn fmt_token_amount(value: U256, decimals: u32) -> String {
+    let divisor = U256::from(10).pow(U256::from(decimals));
+    let whole = value / divisor;
+    let frac = value % divisor;
+    // Pad fractional part to decimals digits
+    let frac_str = format!("{:0>width$}", frac, width = decimals as usize);
+    // Trim trailing zeros
+    let frac_trimmed = frac_str.trim_end_matches('0');
+    if frac_trimmed.is_empty() {
+        format!("{}", whole)
+    } else {
+        format!("{}.{}", whole, frac_trimmed)
+    }
+}
+
+/// Format f64 as USD with $ and comma grouping.
+fn fmt_usd(value: f64) -> String {
+    if value >= 1e6 {
+        format!("${:.2}M", value / 1e6)
+    } else if value >= 1e3 {
+        format!("${:.2}K", value / 1e3)
+    } else {
+        format!("${:.2}", value)
+    }
+}
+
+/// Format f64 APY decimal as percentage.
+fn fmt_pct(value: f64) -> String {
+    format!("{:.2}%", value * 100.0)
+}
+
 fn evaluate_u256_condition(
     name: &str,
     condition: &MetricCondition,
@@ -1111,7 +1143,12 @@ fn evaluate_u256_condition(
         if let Ok(limit) = U256::from_str(upper) {
             let scaled = limit.checked_mul(scale).unwrap_or(limit);
             if current > scaled {
-                reasons.push(format!("{} 当前值 {} > 上限 {}", name, current, scaled));
+                reasons.push(format!(
+                    "{} 当前值 {} > 上限 {}",
+                    name,
+                    fmt_token_amount(current, decimals),
+                    fmt_token_amount(scaled, decimals),
+                ));
             }
         }
     }
@@ -1119,7 +1156,12 @@ fn evaluate_u256_condition(
         if let Ok(limit) = U256::from_str(lower) {
             let scaled = limit.checked_mul(scale).unwrap_or(limit);
             if current < scaled {
-                reasons.push(format!("{} 当前值 {} < 下限 {}", name, current, scaled));
+                reasons.push(format!(
+                    "{} 当前值 {} < 下限 {}",
+                    name,
+                    fmt_token_amount(current, decimals),
+                    fmt_token_amount(scaled, decimals),
+                ));
             }
         }
     }
@@ -1127,7 +1169,20 @@ fn evaluate_u256_condition(
 }
 
 /// Evaluate an f64 metric condition, return triggered reasons.
-fn evaluate_f64_condition(name: &str, condition: &MetricCondition, current: f64) -> Vec<String> {
+/// `hint`: "usd" for dollar-denominated values, "apy" for APY percentages.
+fn evaluate_f64_condition(
+    name: &str,
+    condition: &MetricCondition,
+    current: f64,
+    hint: &str,
+) -> Vec<String> {
+    let fmt_val = |v: f64| -> String {
+        match hint {
+            "usd" => fmt_usd(v),
+            "apy" => fmt_pct(v),
+            _ => format!("{:.2}", v),
+        }
+    };
     let mut reasons = Vec::new();
     if !condition.is_active() {
         return reasons;
@@ -1135,14 +1190,24 @@ fn evaluate_f64_condition(name: &str, condition: &MetricCondition, current: f64)
     if let Some(ref upper) = condition.upper {
         if let Ok(limit) = upper.parse::<f64>() {
             if current > limit {
-                reasons.push(format!("{} 当前值 {:.4} > 上限 {}", name, current, limit));
+                reasons.push(format!(
+                    "{} 当前值 {} > 上限 {}",
+                    name,
+                    fmt_val(current),
+                    fmt_val(limit),
+                ));
             }
         }
     }
     if let Some(ref lower) = condition.lower {
         if let Ok(limit) = lower.parse::<f64>() {
             if current < limit {
-                reasons.push(format!("{} 当前值 {:.4} < 下限 {}", name, current, limit));
+                reasons.push(format!(
+                    "{} 当前值 {} < 下限 {}",
+                    name,
+                    fmt_val(current),
+                    fmt_val(limit),
+                ));
             }
         }
     }
@@ -1186,7 +1251,7 @@ fn evaluate_market_conditions(cond: &ConditionGroup, market: &MarketInfo) -> Vec
         liquidity,
         decimals,
     ));
-    reasons.extend(evaluate_f64_condition("Supply APY", &cond.supply_apy, apy));
+    reasons.extend(evaluate_f64_condition("Supply APY", &cond.supply_apy, apy, "apy"));
     reasons
 }
 
@@ -1201,9 +1266,10 @@ fn evaluate_vault_conditions(cond: &ConditionGroup, vault: &VaultInfo) -> Vec<St
         "Total Deposits",
         &cond.total_deposits,
         total,
+        "usd",
     ));
-    reasons.extend(evaluate_f64_condition("Liquidity", &cond.liquidity, liq));
-    reasons.extend(evaluate_f64_condition("Net APY", &cond.net_apy, apy));
+    reasons.extend(evaluate_f64_condition("Liquidity", &cond.liquidity, liq, "usd"));
+    reasons.extend(evaluate_f64_condition("Net APY", &cond.net_apy, apy, "apy"));
     reasons
 }
 
@@ -1261,15 +1327,15 @@ mod tests {
             upper: Some("5.0".into()),
             lower: Some("0.5".into()),
         };
-        assert!(!evaluate_f64_condition("test", &c, 10.0).is_empty());
-        assert!(!evaluate_f64_condition("test", &c, 0.1).is_empty());
-        assert!(evaluate_f64_condition("test", &c, 1.0).is_empty());
+        assert!(!evaluate_f64_condition("test", &c, 10.0, "usd").is_empty());
+        assert!(!evaluate_f64_condition("test", &c, 0.1, "usd").is_empty());
+        assert!(evaluate_f64_condition("test", &c, 1.0, "usd").is_empty());
         let c = MetricCondition {
             enabled: false,
             upper: Some("5.0".into()),
             lower: None,
         };
-        assert!(evaluate_f64_condition("test", &c, 10.0).is_empty());
+        assert!(evaluate_f64_condition("test", &c, 10.0, "usd").is_empty());
     }
 
     #[test]
