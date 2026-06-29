@@ -221,7 +221,7 @@ async fn update_order(
     Ok(Json(ApiResponse::ok(updated)))
 }
 
-/// DELETE /api/orders/:id — delete an order from any status.
+/// DELETE /api/orders/:id — permanently delete an order.
 async fn delete_order(
     State(state): State<AppState>,
     user: AuthUser,
@@ -229,21 +229,19 @@ async fn delete_order(
 ) -> Result<Json<ApiResponse<Order>>, AppError> {
     let mut orders = state.orders.write().await;
     let order = orders
-        .get_mut(&id)
+        .get(&id)
         .ok_or_else(|| AppError::NotFound(format!("Order {} not found", id)))?;
 
     if !user.is_admin() && order.user_address != user.address {
         return Err(AppError::Forbidden("Not your order".into()));
     }
 
-    info!("Order {} status: {:?} → Ended (deleted)", id, order.status);
-    order.status = OrderStatus::Ended;
-    order.updated_at = Utc::now().timestamp();
-    let ended = order.clone();
+    let removed = orders.remove(&id).unwrap();
+    info!("Order {} permanently deleted (was {:?})", id, removed.status);
     drop(orders);
     persist_orders(&state).await?;
 
-    Ok(Json(ApiResponse::ok(ended)))
+    Ok(Json(ApiResponse::ok(removed)))
 }
 
 /// Persist orders to JSON file.
@@ -459,12 +457,12 @@ mod tests {
         let deleted = delete_order(State(state.clone()), user.clone(), Path(order_id.clone()))
             .await
             .unwrap();
-        assert_eq!(deleted.0.data.unwrap().status, OrderStatus::Ended);
+        assert!(deleted.0.data.is_some());
 
+        // Verify order is actually removed, not just marked Ended
         let list = list_orders(State(state.clone()), user).await.unwrap();
         let orders = list.0.data.unwrap();
-        let order = orders.iter().find(|o| o.id == order_id).unwrap();
-        assert_eq!(order.status, OrderStatus::Ended);
+        assert!(orders.iter().find(|o| o.id == order_id).is_none(), "order should be removed, not kept");
     }
 
     #[tokio::test]

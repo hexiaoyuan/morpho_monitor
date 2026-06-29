@@ -368,7 +368,7 @@ function formatTokenSimple(v,dec){if(!v||v==='0')return'0.00';const n=Number(v)/
       +'<div class="tx-xs tx-dim mt1">ID: '+shortenAddr(o.id)+' · '+new Date(o.created_at*1000).toLocaleString()
       +(d?' · 更新于 '+new Date((d.updated_at||d.updatedAt)*1000).toLocaleTimeString():'')+'</div></div>'
       +'<button class="btn-gray btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button>'
-      +(!isLiquidating&&!isEnded?'<button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
+      +(!isLiquidating?'<button class="btn-red btn-sm" onclick="cancelOrder(\''+o.id+'\')">删除</button>':'')
       +'</div>';
   }).join('');
 }
